@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>成长相册排版软件</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- 顶部工具栏 -->
+    <header id="toolbar">
+      <div class="toolbar-left">
+        <h1 class="app-title">📸 成长相册排版</h1>
+        <button id="btn-select-dir" class="btn btn-primary">
+          <span class="icon">📁</span> 选择照片目录
+        </button>
+        <input type="text" id="dir-input" placeholder="或手动输入路径，如 D:\" style="padding:4px 8px;border:1px solid rgba(255,255,255,0.3);border-radius:4px;background:rgba(255,255,255,0.1);color:white;font-size:12px;width:200px;font-family:inherit;">
+        <button id="btn-load-dir" class="btn btn-sm">加载</button>
+        <button id="btn-quick-d" class="btn btn-sm" title="直接加载D盘">⚡D盘</button>
+        <span id="dir-path" class="dir-path">未选择目录</span>
+      </div>
+      <div class="toolbar-right">
+        <div class="theme-selector" title="主题配色">
+          <span class="theme-dot theme-dot-girl" data-theme="girl" title="女孩粉"></span>
+          <span class="theme-dot theme-dot-boy" data-theme="boy" title="男孩蓝"></span>
+          <span class="theme-dot theme-dot-warm active" data-theme="warm" title="暖色"></span>
+          <span class="theme-dot theme-dot-vintage" data-theme="vintage" title="复古"></span>
+          <span class="theme-dot theme-dot-green" data-theme="green" title="自然绿"></span>
+        </div>
+        <span class="toolbar-sep"></span>
+        <button id="btn-view-select" class="btn btn-tab active" data-view="select">🖼️ 选片</button>
+        <button id="btn-view-layout" class="btn btn-tab" data-view="layout">📐 排版</button>
+        <button id="btn-view-preview" class="btn btn-tab" data-view="preview">👁️ 预览</button>
+        <span class="toolbar-sep"></span>
+        <button id="btn-save" class="btn">💾 保存项目</button>
+        <button id="btn-open" class="btn">📂 打开项目</button>
+        <button id="btn-auto-layout" class="btn btn-accent">✨ 自动排版</button>
+        <button id="btn-export" class="btn btn-success">🖨️ 导出打印</button>
+      </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main id="main-content">
+      
+      <!-- 选片视图 -->
+      <div id="view-select" class="view active">
+        <div class="select-layout">
+          <!-- 左侧年份导航 -->
+          <aside id="year-nav" class="year-nav">
+            <div class="nav-header">📅 年份</div>
+            <div id="year-list" class="year-list"></div>
+          </aside>
+          
+          <!-- 中间照片网格 -->
+          <div id="photo-grid-container" class="photo-grid-container">
+            <div class="grid-header">
+              <span id="current-section-title">请选择照片目录开始</span>
+              <div class="grid-actions">
+                <input type="text" id="search-input" placeholder="🔍 搜索文件名..." style="padding:3px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;width:160px;">
+                <button id="btn-select-all" class="btn btn-sm">全选</button>
+                <button id="btn-deselect-all" class="btn btn-sm">取消全选</button>
+                <span id="selected-count" class="selected-count">已选 0 张</span>
+              </div>
+            </div>
+            <div id="photo-grid" class="photo-grid"></div>
+          </div>
+          
+          <!-- 右侧已选面板 -->
+          <aside id="selected-panel" class="selected-panel">
+            <div class="panel-header">⭐ 已精选 <span id="panel-count">0</span> 张</div>
+            <div id="selected-list" class="selected-list"></div>
+            <div class="panel-footer">
+              <button id="btn-clear-selected" class="btn btn-sm btn-danger">清空精选</button>
+              <button id="btn-go-layout" class="btn btn-sm btn-primary">去排版 →</button>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <!-- 排版视图 -->
+      <div id="view-layout" class="view">
+        <div class="layout-container">
+          <!-- 文字属性浮动工具栏 -->
+          <div id="text-props-bar" class="text-props-bar hidden">
+            <div class="text-props-row">
+              <select id="text-font-family" class="text-prop-select" title="字体">
+                <option value="">默认</option>
+                <option value="'STSong','SimSun',serif">宋体</option>
+                <option value="'STKaiti','KaiTi',serif">楷体</option>
+                <option value="'STHeiti','SimHei',sans-serif">黑体</option>
+                <option value="'Georgia','STSong',serif">衬线</option>
+                <option value="'Arial','Microsoft YaHei',sans-serif">无衬线</option>
+                <option value="'Courier New','SimSun',monospace">等宽</option>
+                <option value="'STFangsong','FangSong',serif">仿宋</option>
+                <option value="'Comic Sans MS','KaiTi',cursive">手写</option>
+              </select>
+              <input type="number" id="text-font-size" class="text-prop-num" min="8" max="200" value="16" title="字号">
+              <div class="text-prop-color-wrap" title="文字颜色">
+                <input type="color" id="text-color" class="text-prop-color" value="#333333">
+              </div>
+              <button id="text-btn-bold" class="text-prop-btn" title="加粗">B</button>
+              <button id="text-btn-italic" class="text-prop-btn text-prop-italic" title="斜体">I</button>
+              <button id="text-btn-left" class="text-prop-btn" title="左对齐" style="text-align:left;padding-left:3px;">☰</button>
+              <button id="text-btn-center" class="text-prop-btn" title="居中">☰</button>
+              <button id="text-btn-right" class="text-prop-btn" title="右对齐" style="text-align:right;padding-right:3px;">☰</button>
+              <span class="text-prop-sep"></span>
+              <label class="text-prop-label">间距</label>
+              <input type="number" id="text-letter-spacing" class="text-prop-num-sm" min="-5" max="30" step="0.5" value="0" title="字间距(px)">
+              <label class="text-prop-label">行高</label>
+              <input type="number" id="text-line-height" class="text-prop-num-sm" min="0.8" max="4" step="0.1" value="1.4" title="行高">
+              <label class="text-prop-label">透明</label>
+              <input type="range" id="text-opacity" class="text-prop-range" min="10" max="100" value="100" title="透明度">
+              <span class="text-prop-sep"></span>
+              <button id="text-btn-duplicate" class="text-prop-btn" title="复制">📋</button>
+              <button id="text-btn-layer-up" class="text-prop-btn" title="上移一层">↑</button>
+              <button id="text-btn-layer-down" class="text-prop-btn" title="下移一层">↓</button>
+            </div>
+          </div>
+          <div id="album-pages" class="album-pages"></div>
+        </div>
+      </div>
+
+      <!-- 预览视图 -->
+      <div id="view-preview" class="view">
+        <div class="preview-container">
+          <div class="preview-toolbar">
+            <button id="btn-prev-page" class="btn">◀ 上一页</button>
+            <span id="preview-page-info">第 1 页 / 共 1 页</span>
+            <button id="btn-next-page" class="btn">下一页 ▶</button>
+            <span class="toolbar-sep"></span>
+            <label>缩放：</label>
+            <input type="range" id="preview-zoom" min="30" max="150" value="70" step="5">
+            <span id="zoom-label">70%</span>
+          </div>
+          <div id="preview-canvas" class="preview-canvas"></div>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- 照片大图预览弹窗 -->
+    <div id="lightbox" class="lightbox hidden">
+      <div class="lightbox-overlay"></div>
+      <div class="lightbox-content">
+        <button class="lightbox-close">✕</button>
+        <div class="lightbox-nav left" id="lightbox-prev">◀</div>
+        <img id="lightbox-img" src="" alt="">
+        <div class="lightbox-nav right" id="lightbox-next">▶</div>
+        <div class="lightbox-info">
+          <span id="lightbox-filename"></span>
+          <button id="btn-lightbox-select" class="btn btn-sm">⭐ 选入精选</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 导出选项弹窗 -->
+    <div id="export-modal" class="modal hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-content">
+        <h2>🖨️ 导出打印设置</h2>
+        <div class="form-group">
+          <label>相册名称：</label>
+          <input type="text" id="export-album-title" placeholder="例如：宝宝的成长纪念册" value="">
+        </div>
+        <div class="form-group">
+          <label>纸张尺寸：</label>
+          <select id="export-paper-size">
+            <option value="a5" selected>A5 (148×210mm) - 推荐</option>
+            <option value="a4">A4 (210×297mm)</option>
+            <option value="a4-landscape">A4 横版 (297×210mm)</option>
+            <option value="a3">A3 (297×420mm)</option>
+            <option value="square">方形画册 (210×210mm)</option>
+            <option value="8x10">8×10英寸 (20×25cm)</option>
+            <option value="12x12">12×12英寸 (30×30cm)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>导出格式：</label>
+          <select id="export-format">
+            <option value="pdf">PDF 文件（推荐打印）</option>
+            <option value="images">单页图片包（JPG）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>封面：</label>
+          <input type="checkbox" id="export-cover" checked> 包含封面和封底
+        </div>
+        <div class="modal-actions">
+          <button id="btn-export-cancel" class="btn">取消</button>
+          <button id="btn-export-confirm" class="btn btn-success">开始导出</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 加载提示 -->
+    <div id="loading" class="loading hidden">
+      <div class="loading-spinner"></div>
+      <span id="loading-text">加载中...</span>
+    </div>
+
+    <!-- Toast 提示 -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="app-browser.js"></script>
+</body>
+</html>
