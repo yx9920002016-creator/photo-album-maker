@@ -488,7 +488,7 @@ function autoLayout(photos) {
     const yearNum = yf.match(/^(\d{4})/) ? parseInt(yf.match(/^(\d{4})/)[1]) : null;
     coverElements.push({
       type: 'text', id: newElementId(),
-      x: 160, y: 80, w: 200, h: 70,
+      x: 210, y: 100, w: 200, h: 70,
       text: yearNum ? String(yearNum) : yf,
       fontSize: 64, color: 'var(--theme-primary)', align: 'center',
       fontWeight: '700', opacity: 0.7
@@ -496,7 +496,7 @@ function autoLayout(photos) {
     // 副标题
     coverElements.push({
       type: 'text', id: newElementId(),
-      x: 110, y: 170, w: 300, h: 40,
+      x: 160, y: 190, w: 300, h: 40,
       text: '美好的时光',
       fontSize: 20, color: 'var(--theme-text-secondary)', align: 'center',
       letterSpacing: '6px'
@@ -505,7 +505,7 @@ function autoLayout(photos) {
     if (yearPhotos.length > 0) {
       coverElements.push({
         type: 'photo', id: newElementId(),
-        x: 60, y: 240, w: 400, h: 280,
+        x: 60, y: 260, w: 500, h: 380,
         photo: yearPhotos[0], caption: '', frame: 'clean'
       });
     }
@@ -517,25 +517,29 @@ function autoLayout(photos) {
 
     // 其余照片按每页2-4张分配
     let i = yearPhotos.length > 0 ? 1 : 0;
+    const pw = 620, ph = Math.round(620 / 0.705);
     while (i < yearPhotos.length) {
       const left = yearPhotos.length - i;
       const count = left >= 4 ? 4 : left >= 3 ? 3 : left >= 2 ? 2 : 1;
       const pagePhotos = yearPhotos.slice(i, i + count);
       const elements = [];
       if (count === 1) {
-        elements.push({ type: 'photo', id: newElementId(), x: 60, y: 60, w: 400, h: 520, photo: pagePhotos[0], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 60, y: 60, w: 500, h: ph - 120, photo: pagePhotos[0], caption: '', frame: 'clean' });
       } else if (count === 2) {
-        elements.push({ type: 'photo', id: newElementId(), x: 30, y: 60, w: 230, h: 520, photo: pagePhotos[0], caption: '', frame: 'clean' });
-        elements.push({ type: 'photo', id: newElementId(), x: 270, y: 60, w: 230, h: 520, photo: pagePhotos[1], caption: '', frame: 'clean' });
+        const hw = Math.round((pw - 80) / 2);
+        elements.push({ type: 'photo', id: newElementId(), x: 25, y: 60, w: hw, h: ph - 120, photo: pagePhotos[0], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 25 + hw + 30, y: 60, w: hw, h: ph - 120, photo: pagePhotos[1], caption: '', frame: 'clean' });
       } else if (count === 3) {
-        elements.push({ type: 'photo', id: newElementId(), x: 30, y: 60, w: 460, h: 300, photo: pagePhotos[0], caption: '', frame: 'clean' });
-        elements.push({ type: 'photo', id: newElementId(), x: 30, y: 380, w: 220, h: 200, photo: pagePhotos[1], caption: '', frame: 'clean' });
-        elements.push({ type: 'photo', id: newElementId(), x: 270, y: 380, w: 220, h: 200, photo: pagePhotos[2], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 30, y: 40, w: 560, h: Math.round((ph - 120) * 0.55), photo: pagePhotos[0], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 30, y: Math.round((ph - 120) * 0.55 + 60), w: 270, h: Math.round((ph - 120) * 0.4), photo: pagePhotos[1], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 320, y: Math.round((ph - 120) * 0.55 + 60), w: 270, h: Math.round((ph - 120) * 0.4), photo: pagePhotos[2], caption: '', frame: 'clean' });
       } else {
-        elements.push({ type: 'photo', id: newElementId(), x: 30, y: 60, w: 220, h: 260, photo: pagePhotos[0], caption: '', frame: 'clean' });
-        elements.push({ type: 'photo', id: newElementId(), x: 270, y: 60, w: 220, h: 260, photo: pagePhotos[1], caption: '', frame: 'clean' });
-        elements.push({ type: 'photo', id: newElementId(), x: 30, y: 340, w: 220, h: 260, photo: pagePhotos[2], caption: '', frame: 'clean' });
-        elements.push({ type: 'photo', id: newElementId(), x: 270, y: 340, w: 220, h: 260, photo: pagePhotos[3], caption: '', frame: 'clean' });
+        const hw = Math.round((pw - 80) / 2);
+        const hh = Math.round((ph - 100) / 2);
+        elements.push({ type: 'photo', id: newElementId(), x: 25, y: 35, w: hw, h: hh, photo: pagePhotos[0], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 25 + hw + 30, y: 35, w: hw, h: hh, photo: pagePhotos[1], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 25, y: 35 + hh + 30, w: hw, h: hh, photo: pagePhotos[2], caption: '', frame: 'clean' });
+        elements.push({ type: 'photo', id: newElementId(), x: 25 + hw + 30, y: 35 + hh + 30, w: hw, h: hh, photo: pagePhotos[3], caption: '', frame: 'clean' });
       }
       pages.push({
         type: 'free',
@@ -572,9 +576,11 @@ function renderAlbumPages() {
         <div style="font-size:13px;">请先在选片视图中精选照片，然后点击 ✨"自动排版"</div>
       </div>
     `;
+    renderPageNav();
+    renderUnusedPhotos();
     return;
   }
-  const pageWidth = 520;
+  const pageWidth = 620;
   const pageHeight = Math.round(pageWidth / 0.705);
   state.albumPages.forEach((page, pageIndex) => {
     const pageEl = document.createElement('div');
@@ -582,6 +588,10 @@ function renderAlbumPages() {
     pageEl.style.width = pageWidth + 'px';
     pageEl.style.height = pageHeight + 'px';
     pageEl.dataset.pageIndex = pageIndex;
+    // 自定义背景色
+    if (page.bgColor) {
+      pageEl.style.background = page.bgColor;
+    }
 
     // 工具栏
     addFreePageToolbar(pageEl, page, pageIndex);
@@ -601,6 +611,10 @@ function renderAlbumPages() {
 
     container.appendChild(pageEl);
   });
+  
+  // 渲染右侧面板
+  renderPageNav();
+  renderUnusedPhotos();
 }
 
 // 渲染单个元素（照片或文字）
@@ -785,8 +799,10 @@ document.addEventListener('mousemove', (e) => {
     let newX = e.clientX - pageRect.left - state.dragOffset.x;
     let newY = e.clientY - pageRect.top - state.dragOffset.y;
     // 限制在页面内
-    newX = Math.max(0, Math.min(newX, 520 - el.w));
-    newY = Math.max(0, Math.min(newY, pageEl.offsetHeight - el.h));
+    const maxX = pageEl.offsetWidth - el.w;
+    const maxY = pageEl.offsetHeight - el.h;
+    newX = Math.max(0, Math.min(newX, maxX));
+    newY = Math.max(0, Math.min(newY, maxY));
     el.x = Math.round(newX);
     el.y = Math.round(newY);
     elDiv.style.left = el.x + 'px';
@@ -1194,7 +1210,7 @@ function renderPreview() {
 
   const page = state.albumPages[state.previewPage];
   const zoom = state.previewZoom / 100;
-  const baseW = 520;
+  const baseW = 620;
   const baseH = Math.round(baseW / 0.705);
 
   const pageEl = document.createElement('div');
@@ -1471,7 +1487,7 @@ async function exportToPdf(paperSize, includeCover) {
       // 自由排版页面
       if (page.elements) {
         page.elements.forEach(el => {
-          renderExportElement(pageEl, el, renderW / 520, renderH / Math.round(520 / 0.705));
+          renderExportElement(pageEl, el, renderW / 620, renderH / Math.round(620 / 0.705));
         });
       }
     }
@@ -1599,7 +1615,7 @@ async function exportToImages(paperSize, includeCover) {
     } else {
       if (page.elements) {
         page.elements.forEach(el => {
-          renderExportElement(pageEl, el, renderW / 520, renderH / Math.round(520 / 0.705));
+          renderExportElement(pageEl, el, renderW / 620, renderH / Math.round(620 / 0.705));
         });
       }
     }
@@ -1697,6 +1713,361 @@ function renderBackCoverForExport(pageEl, w, h) {
   year.style.cssText = `font-size:14px;color:var(--theme-text-lighter);margin-top:12px;position:relative;z-index:1;`;
   year.textContent = new Date().getFullYear() + ' 年';
   pageEl.appendChild(year);
+}
+
+// ==================== 右侧面板：页面导航 ====================
+function renderPageNav() {
+  const container = $('#page-nav-list');
+  const countEl = $('#page-nav-count');
+  container.innerHTML = '';
+  
+  if (state.albumPages.length === 0) {
+    countEl.textContent = '';
+    container.innerHTML = '<div style="text-align:center;color:#ccc;font-size:11px;padding:12px;">暂无页面</div>';
+    return;
+  }
+  
+  countEl.textContent = `共${state.albumPages.length}页`;
+  
+  state.albumPages.forEach((page, pageIndex) => {
+    const item = document.createElement('div');
+    item.className = 'page-nav-item';
+    item.dataset.pageIndex = pageIndex;
+    
+    // 缩略图：显示页面第一张照片
+    const thumb = document.createElement('div');
+    thumb.className = 'page-nav-thumb';
+    let firstPhoto = null;
+    if (page.elements) {
+      for (const el of page.elements) {
+        if (el.type === 'photo' && el.photo) {
+          firstPhoto = el.photo;
+          break;
+        }
+      }
+    }
+    if (firstPhoto) {
+      const img = document.createElement('img');
+      img.src = API.thumbnailUrl(firstPhoto.path);
+      thumb.appendChild(img);
+    } else {
+      const ph = document.createElement('div');
+      ph.className = 'thumb-placeholder';
+      ph.textContent = '空';
+      thumb.appendChild(ph);
+    }
+    item.appendChild(thumb);
+    
+    // 页面信息
+    const info = document.createElement('div');
+    info.className = 'page-nav-info';
+    const num = document.createElement('div');
+    num.className = 'page-nav-num';
+    num.textContent = `第${pageIndex + 1}页`;
+    info.appendChild(num);
+    
+    // 年份标签 + 元素数量
+    const detail = document.createElement('div');
+    detail.className = 'page-nav-detail';
+    const label = page.yearLabel || '';
+    const elCount = page.elements ? page.elements.length : 0;
+    const photoCount = page.elements ? page.elements.filter(e => e.type === 'photo' && e.photo).length : 0;
+    const textCount = page.elements ? page.elements.filter(e => e.type === 'text').length : 0;
+    const parts = [];
+    if (label) parts.push(label);
+    if (photoCount > 0) parts.push(`${photoCount}图`);
+    if (textCount > 0) parts.push(`${textCount}文`);
+    if (parts.length === 0) parts.push('空白');
+    detail.textContent = parts.join(' · ');
+    info.appendChild(detail);
+    
+    item.appendChild(info);
+    
+    // 点击跳转
+    item.addEventListener('click', () => {
+      scrollToPage(pageIndex);
+    });
+    
+    container.appendChild(item);
+  });
+  
+  // 监听滚动高亮当前页
+  updateActivePageNav();
+}
+
+function scrollToPage(pageIndex) {
+  const pageEl = document.querySelector(`.album-page[data-page-index="${pageIndex}"]`);
+  if (pageEl) {
+    pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // 高亮导航项
+    $$('.page-nav-item').forEach(item => item.classList.remove('active'));
+    const navItem = document.querySelector(`.page-nav-item[data-page-index="${pageIndex}"]`);
+    if (navItem) navItem.classList.add('active');
+  }
+}
+
+function updateActivePageNav() {
+  const mainArea = document.querySelector('.layout-main');
+  if (!mainArea) return;
+  
+  let currentIdx = -1;
+  let minDist = Infinity;
+  const centerY = mainArea.scrollTop + mainArea.clientHeight / 2;
+  
+  $$('.album-page').forEach(pageEl => {
+    const rect = pageEl.getBoundingClientRect();
+    const mainRect = mainArea.getBoundingClientRect();
+    const pageCenter = rect.top - mainRect.top + mainArea.scrollTop + rect.height / 2;
+    const dist = Math.abs(pageCenter - centerY);
+    if (dist < minDist) {
+      minDist = dist;
+      currentIdx = parseInt(pageEl.dataset.pageIndex);
+    }
+  });
+  
+  $$('.page-nav-item').forEach(item => {
+    item.classList.toggle('active', parseInt(item.dataset.pageIndex) === currentIdx);
+  });
+}
+
+// 监听画布区域滚动更新页面导航高亮
+let pageNavScrollTimer = null;
+document.addEventListener('scroll', (e) => {
+  if (e.target.closest('.layout-main')) {
+    if (pageNavScrollTimer) clearTimeout(pageNavScrollTimer);
+    pageNavScrollTimer = setTimeout(updateActivePageNav, 100);
+  }
+}, true);
+
+// ==================== 右侧面板：未使用素材 ====================
+function getUnusedPhotos() {
+  // 收集排版中已使用的照片路径
+  const usedPaths = new Set();
+  state.albumPages.forEach(page => {
+    if (page.elements) {
+      page.elements.forEach(el => {
+        if (el.type === 'photo' && el.photo) {
+          usedPaths.add(el.photo.path);
+        }
+      });
+    }
+  });
+  
+  // 精选但未使用的照片
+  const unused = [];
+  for (const [path, photo] of state.selectedPhotos) {
+    if (!usedPaths.has(path)) {
+      unused.push(photo);
+    }
+  }
+  return unused;
+}
+
+function renderUnusedPhotos() {
+  const container = $('#unused-photos');
+  const countEl = $('#unused-count');
+  container.innerHTML = '';
+  
+  const unused = getUnusedPhotos();
+  countEl.textContent = unused.length > 0 ? `${unused.length}张` : '';
+  
+  if (unused.length === 0) {
+    container.innerHTML = '<div class="unused-empty">全部素材已排版 ✓</div>';
+    return;
+  }
+  
+  unused.forEach(photo => {
+    const item = document.createElement('div');
+    item.className = 'unused-photo-item';
+    const img = document.createElement('img');
+    img.src = API.thumbnailUrl(photo.path);
+    img.loading = 'lazy';
+    item.appendChild(img);
+    
+    const hint = document.createElement('div');
+    hint.className = 'unused-hint';
+    hint.textContent = '点击添加';
+    item.appendChild(hint);
+    
+    item.addEventListener('click', () => {
+      // 添加到当前最后一页（或最接近当前视口的页面）
+      addUnusedPhotoToAlbum(photo);
+    });
+    
+    container.appendChild(item);
+  });
+}
+
+function addUnusedPhotoToAlbum(photo) {
+  if (state.albumPages.length === 0) return;
+  
+  // 找到当前视口中最接近的页面
+  let targetIndex = state.albumPages.length - 1; // 默认最后一页
+  const mainArea = document.querySelector('.layout-main');
+  if (mainArea) {
+    let minDist = Infinity;
+    const centerY = mainArea.scrollTop + mainArea.clientHeight / 2;
+    $$('.album-page').forEach(pageEl => {
+      const rect = pageEl.getBoundingClientRect();
+      const mainRect = mainArea.getBoundingClientRect();
+      const pageCenter = rect.top - mainRect.top + mainArea.scrollTop + rect.height / 2;
+      const dist = Math.abs(pageCenter - centerY);
+      if (dist < minDist) {
+        minDist = dist;
+        targetIndex = parseInt(pageEl.dataset.pageIndex);
+      }
+    });
+  }
+  
+  const page = state.albumPages[targetIndex];
+  if (!page.elements) page.elements = [];
+  
+  // 智能计算位置：放在已有元素旁边
+  let x = 60, y = 60;
+  const existingPhotos = page.elements.filter(e => e.type === 'photo' && e.photo);
+  if (existingPhotos.length > 0) {
+    // 放在最后一个照片元素旁边，偏移一些
+    const last = existingPhotos[existingPhotos.length - 1];
+    x = last.x + last.w + 20;
+    y = last.y;
+    // 如果超出页面，换行
+    if (x + 200 > 620) {
+      x = 60;
+      y = last.y + last.h + 20;
+    }
+  }
+  
+  page.elements.push({
+    type: 'photo', id: newElementId(),
+    x, y, w: 200, h: 200,
+    photo, caption: '', frame: state.frameStyle
+  });
+  
+  renderAlbumPages();
+  showToast(`已将 "${photo.name}" 添加到第${targetIndex + 1}页`);
+}
+
+// ==================== 右侧面板：页面属性 ====================
+// 当前选中的页面索引（用于属性编辑）
+let editingPageIndex = null;
+
+// 页面背景色切换
+$$('#page-bg-colors .bg-color-dot').forEach(dot => {
+  dot.addEventListener('click', () => {
+    if (editingPageIndex === null || editingPageIndex >= state.albumPages.length) {
+      showToast('请先在页面导航中选择一个页面');
+      return;
+    }
+    const bgColor = dot.dataset.bg;
+    const page = state.albumPages[editingPageIndex];
+    page.bgColor = bgColor;
+    // 更新高亮
+    $$('#page-bg-colors .bg-color-dot').forEach(d => d.classList.remove('active'));
+    dot.classList.add('active');
+    renderAlbumPages();
+  });
+});
+
+// 快速模板应用
+$$('#quick-templates .tpl-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (editingPageIndex === null || editingPageIndex >= state.albumPages.length) {
+      showToast('请先在页面导航中选择一个页面');
+      return;
+    }
+    const tpl = parseInt(btn.dataset.tpl);
+    const page = state.albumPages[editingPageIndex];
+    
+    // 收集当前页面的照片元素（保留照片引用）
+    const existingPhotos = page.elements ? page.elements.filter(e => e.type === 'photo' && e.photo) : [];
+    const existingTexts = page.elements ? page.elements.filter(e => e.type === 'text') : [];
+    
+    // 清空并重新布局
+    page.elements = [...existingTexts]; // 保留文字
+    
+    const pw = 620, ph = Math.round(620 / 0.705);
+    const photos = existingPhotos.map(e => e.photo);
+    
+    if (photos.length === 0) {
+      showToast('当前页面没有照片');
+      return;
+    }
+    
+    if (tpl === 1) {
+      // 单张大图
+      page.elements.push({
+        type: 'photo', id: newElementId(),
+        x: 60, y: 60, w: 500, h: ph - 120,
+        photo: photos[0], caption: '', frame: state.frameStyle
+      });
+    } else if (tpl === 2) {
+      // 左右双图
+      const halfW = 280;
+      for (let i = 0; i < Math.min(2, photos.length); i++) {
+        page.elements.push({
+          type: 'photo', id: newElementId(),
+          x: 30 + i * 300, y: 60, w: halfW, h: ph - 120,
+          photo: photos[i], caption: '', frame: state.frameStyle
+        });
+      }
+    } else if (tpl === 3) {
+      // 上大下双
+      if (photos.length >= 1) {
+        page.elements.push({
+          type: 'photo', id: newElementId(),
+          x: 30, y: 40, w: 560, h: Math.round((ph - 120) * 0.55),
+          photo: photos[0], caption: '', frame: state.frameStyle
+        });
+      }
+      for (let i = 1; i < Math.min(3, photos.length); i++) {
+        page.elements.push({
+          type: 'photo', id: newElementId(),
+          x: 30 + (i - 1) * 290, y: Math.round((ph - 120) * 0.55 + 60),
+          w: 270, h: Math.round((ph - 120) * 0.4),
+          photo: photos[i], caption: '', frame: state.frameStyle
+        });
+      }
+    } else if (tpl === 4) {
+      // 四宫格
+      const halfW = 270;
+      const halfH = Math.round((ph - 120) / 2);
+      for (let i = 0; i < Math.min(4, photos.length); i++) {
+        page.elements.push({
+          type: 'photo', id: newElementId(),
+          x: 30 + (i % 2) * 290, y: 40 + Math.floor(i / 2) * (halfH + 10),
+          w: halfW, h: halfH,
+          photo: photos[i], caption: '', frame: state.frameStyle
+        });
+      }
+    }
+    
+    // 高亮模板按钮
+    $$('#quick-templates .tpl-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    
+    renderAlbumPages();
+    showToast('模板已应用');
+  });
+});
+
+// 点击页面导航项时设置编辑页面
+document.addEventListener('click', (e) => {
+  const navItem = e.target.closest('.page-nav-item');
+  if (navItem) {
+    editingPageIndex = parseInt(navItem.dataset.pageIndex);
+    // 更新属性面板状态
+    updatePagePropsPanel();
+  }
+});
+
+function updatePagePropsPanel() {
+  if (editingPageIndex === null || editingPageIndex >= state.albumPages.length) return;
+  const page = state.albumPages[editingPageIndex];
+  
+  // 背景色高亮
+  $$('#page-bg-colors .bg-color-dot').forEach(d => {
+    d.classList.toggle('active', d.dataset.bg === (page.bgColor || '#FFFEFB'));
+  });
 }
 
 // ==================== 初始化 ====================

@@ -81,43 +81,87 @@
       <!-- 排版视图 -->
       <div id="view-layout" class="view">
         <div class="layout-container">
-          <!-- 文字属性浮动工具栏 -->
-          <div id="text-props-bar" class="text-props-bar hidden">
-            <div class="text-props-row">
-              <select id="text-font-family" class="text-prop-select" title="字体">
-                <option value="">默认</option>
-                <option value="'STSong','SimSun',serif">宋体</option>
-                <option value="'STKaiti','KaiTi',serif">楷体</option>
-                <option value="'STHeiti','SimHei',sans-serif">黑体</option>
-                <option value="'Georgia','STSong',serif">衬线</option>
-                <option value="'Arial','Microsoft YaHei',sans-serif">无衬线</option>
-                <option value="'Courier New','SimSun',monospace">等宽</option>
-                <option value="'STFangsong','FangSong',serif">仿宋</option>
-                <option value="'Comic Sans MS','KaiTi',cursive">手写</option>
-              </select>
-              <input type="number" id="text-font-size" class="text-prop-num" min="8" max="200" value="16" title="字号">
-              <div class="text-prop-color-wrap" title="文字颜色">
-                <input type="color" id="text-color" class="text-prop-color" value="#333333">
+          <!-- 左侧：画布区域 -->
+          <div class="layout-main">
+            <!-- 文字属性浮动工具栏 -->
+            <div id="text-props-bar" class="text-props-bar hidden">
+              <div class="text-props-row">
+                <select id="text-font-family" class="text-prop-select" title="字体">
+                  <option value="">默认</option>
+                  <option value="'STSong','SimSun',serif">宋体</option>
+                  <option value="'STKaiti','KaiTi',serif">楷体</option>
+                  <option value="'STHeiti','SimHei',sans-serif">黑体</option>
+                  <option value="'Georgia','STSong',serif">衬线</option>
+                  <option value="'Arial','Microsoft YaHei',sans-serif">无衬线</option>
+                  <option value="'Courier New','SimSun',monospace">等宽</option>
+                  <option value="'STFangsong','FangSong',serif">仿宋</option>
+                  <option value="'Comic Sans MS','KaiTi',cursive">手写</option>
+                </select>
+                <input type="number" id="text-font-size" class="text-prop-num" min="8" max="200" value="16" title="字号">
+                <div class="text-prop-color-wrap" title="文字颜色">
+                  <input type="color" id="text-color" class="text-prop-color" value="#333333">
+                </div>
+                <button id="text-btn-bold" class="text-prop-btn" title="加粗">B</button>
+                <button id="text-btn-italic" class="text-prop-btn text-prop-italic" title="斜体">I</button>
+                <button id="text-btn-left" class="text-prop-btn" title="左对齐" style="text-align:left;padding-left:3px;">☰</button>
+                <button id="text-btn-center" class="text-prop-btn" title="居中">☰</button>
+                <button id="text-btn-right" class="text-prop-btn" title="右对齐" style="text-align:right;padding-right:3px;">☰</button>
+                <span class="text-prop-sep"></span>
+                <label class="text-prop-label">间距</label>
+                <input type="number" id="text-letter-spacing" class="text-prop-num-sm" min="-5" max="30" step="0.5" value="0" title="字间距(px)">
+                <label class="text-prop-label">行高</label>
+                <input type="number" id="text-line-height" class="text-prop-num-sm" min="0.8" max="4" step="0.1" value="1.4" title="行高">
+                <label class="text-prop-label">透明</label>
+                <input type="range" id="text-opacity" class="text-prop-range" min="10" max="100" value="100" title="透明度">
+                <span class="text-prop-sep"></span>
+                <button id="text-btn-duplicate" class="text-prop-btn" title="复制">📋</button>
+                <button id="text-btn-layer-up" class="text-prop-btn" title="上移一层">↑</button>
+                <button id="text-btn-layer-down" class="text-prop-btn" title="下移一层">↓</button>
               </div>
-              <button id="text-btn-bold" class="text-prop-btn" title="加粗">B</button>
-              <button id="text-btn-italic" class="text-prop-btn text-prop-italic" title="斜体">I</button>
-              <button id="text-btn-left" class="text-prop-btn" title="左对齐" style="text-align:left;padding-left:3px;">☰</button>
-              <button id="text-btn-center" class="text-prop-btn" title="居中">☰</button>
-              <button id="text-btn-right" class="text-prop-btn" title="右对齐" style="text-align:right;padding-right:3px;">☰</button>
-              <span class="text-prop-sep"></span>
-              <label class="text-prop-label">间距</label>
-              <input type="number" id="text-letter-spacing" class="text-prop-num-sm" min="-5" max="30" step="0.5" value="0" title="字间距(px)">
-              <label class="text-prop-label">行高</label>
-              <input type="number" id="text-line-height" class="text-prop-num-sm" min="0.8" max="4" step="0.1" value="1.4" title="行高">
-              <label class="text-prop-label">透明</label>
-              <input type="range" id="text-opacity" class="text-prop-range" min="10" max="100" value="100" title="透明度">
-              <span class="text-prop-sep"></span>
-              <button id="text-btn-duplicate" class="text-prop-btn" title="复制">📋</button>
-              <button id="text-btn-layer-up" class="text-prop-btn" title="上移一层">↑</button>
-              <button id="text-btn-layer-down" class="text-prop-btn" title="下移一层">↓</button>
             </div>
+            <div id="album-pages" class="album-pages"></div>
           </div>
-          <div id="album-pages" class="album-pages"></div>
+          
+          <!-- 右侧：综合面板 -->
+          <aside class="layout-sidebar">
+            <!-- 页面导航 -->
+            <div class="sidebar-section">
+              <div class="sidebar-section-title">📄 页面导航 <span id="page-nav-count" class="sidebar-badge"></span></div>
+              <div id="page-nav-list" class="page-nav-list"></div>
+            </div>
+            
+            <!-- 未使用素材 -->
+            <div class="sidebar-section">
+              <div class="sidebar-section-title">🖼️ 待用素材 <span id="unused-count" class="sidebar-badge"></span></div>
+              <div id="unused-photos" class="unused-photos-grid"></div>
+            </div>
+            
+            <!-- 页面属性 -->
+            <div class="sidebar-section">
+              <div class="sidebar-section-title">⚙️ 页面设置</div>
+              <div class="prop-group">
+                <label class="prop-label">背景色</label>
+                <div class="prop-bg-colors" id="page-bg-colors">
+                  <span class="bg-color-dot" data-bg="#FFFEFB" style="background:#FFFEFB" title="默认白"></span>
+                  <span class="bg-color-dot" data-bg="#FFF8F0" style="background:#FFF8F0" title="米白"></span>
+                  <span class="bg-color-dot" data-bg="#FFF0F5" style="background:#FFF0F5" title="浅粉"></span>
+                  <span class="bg-color-dot" data-bg="#F0F8FF" style="background:#F0F8FF" title="浅蓝"></span>
+                  <span class="bg-color-dot" data-bg="#F5FFF0" style="background:#F5FFF0" title="浅绿"></span>
+                  <span class="bg-color-dot" data-bg="#FFFDF0" style="background:#FFFDF0" title="浅黄"></span>
+                  <span class="bg-color-dot" data-bg="#F8F0FF" style="background:#F8F0FF" title="浅紫"></span>
+                </div>
+              </div>
+              <div class="prop-group">
+                <label class="prop-label">快速模板</label>
+                <div class="quick-templates" id="quick-templates">
+                  <button class="tpl-btn" data-tpl="1" title="单张大图">1</button>
+                  <button class="tpl-btn" data-tpl="2" title="左右双图">2</button>
+                  <button class="tpl-btn" data-tpl="3" title="上大下双">3</button>
+                  <button class="tpl-btn" data-tpl="4" title="四宫格">4</button>
+                </div>
+              </div>
+            </div>
+          </aside>
         </div>
       </div>
 
