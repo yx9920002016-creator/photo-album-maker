@@ -1,0 +1,5 @@
+node_modules/
+_select_dir.ps1
+*.tmp
+*.zip
+backups/
