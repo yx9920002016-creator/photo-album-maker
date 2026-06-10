@@ -57,7 +57,13 @@
             <div class="grid-header">
               <span id="current-section-title">请选择照片目录开始</span>
               <div class="grid-actions">
+                <div class="grid-size-control" title="调整缩略图大小">
+                  <span>🔍</span>
+                  <input type="range" id="grid-size-slider" min="1" max="3" value="2" step="1">
+                  <span class="grid-size-label" id="grid-size-label">中</span>
+                </div>
                 <input type="text" id="search-input" placeholder="🔍 搜索文件名..." style="padding:3px 8px;border:1px solid #ddd;border-radius:4px;font-size:12px;width:160px;">
+                <button id="btn-sort-score" class="btn btn-sm" title="按智能评分排序，高分照片优先">⭐ 按评分排序</button>
                 <button id="btn-select-all" class="btn btn-sm">全选</button>
                 <button id="btn-deselect-all" class="btn btn-sm">取消全选</button>
                 <span id="selected-count" class="selected-count">已选 0 张</span>
@@ -81,7 +87,13 @@
       <!-- 排版视图 -->
       <div id="view-layout" class="view">
         <div class="layout-container">
-          <!-- 左侧：画布区域 -->
+          <!-- 左侧：页面缩略图导航 -->
+          <aside class="layout-thumbnails">
+            <div class="thumbnails-header">📄 页面 <span id="page-nav-count" class="sidebar-badge"></span></div>
+            <div id="page-nav-list" class="page-nav-list"></div>
+          </aside>
+
+          <!-- 中间：画布区域（当前选中页面） -->
           <div class="layout-main">
             <!-- 文字属性浮动工具栏 -->
             <div id="text-props-bar" class="text-props-bar hidden">
@@ -124,20 +136,43 @@
           
           <!-- 右侧：综合面板 -->
           <aside class="layout-sidebar">
-            <!-- 页面导航 -->
-            <div class="sidebar-section">
-              <div class="sidebar-section-title">📄 页面导航 <span id="page-nav-count" class="sidebar-badge"></span></div>
-              <div id="page-nav-list" class="page-nav-list"></div>
+            <!-- 快速模板 -->
+            <div class="sidebar-section templates-section">
+              <div class="sidebar-section-title">📐 快速模板</div>
+              <div class="templates-body">
+                <div class="quick-templates" id="quick-templates">
+                  <button class="tpl-btn" data-tpl="1" title="单张大图">1</button>
+                  <button class="tpl-btn" data-tpl="2" title="左右双图">2</button>
+                  <button class="tpl-btn" data-tpl="3" title="上大下双">3</button>
+                  <button class="tpl-btn" data-tpl="4" title="四宫格">4</button>
+                  <button class="tpl-btn" data-tpl="5" title="左大右双">5</button>
+                  <button class="tpl-btn" data-tpl="6" title="三图横排">6</button>
+                </div>
+                <span class="templates-hint">点击应用到当前页面</span>
+              </div>
             </div>
-            
+
             <!-- 未使用素材 -->
-            <div class="sidebar-section">
+            <div class="sidebar-section unused-section">
               <div class="sidebar-section-title">🖼️ 待用素材 <span id="unused-count" class="sidebar-badge"></span></div>
               <div id="unused-photos" class="unused-photos-grid"></div>
             </div>
-            
+
+            <!-- 装饰素材库 -->
+            <div class="sidebar-section decor-section">
+              <div class="sidebar-section-title">🎨 装饰素材 <span class="sidebar-badge" id="decor-tab-badge"></span></div>
+              <div class="decor-tabs" id="decor-tabs">
+                <button class="decor-tab active" data-decor-tab="emoji">😊 Emoji</button>
+                <button class="decor-tab" data-decor-tab="svg">✿ SVG装饰</button>
+                <button class="decor-tab" data-decor-tab="border">🖼️ 花边边框</button>
+              </div>
+              <div class="decor-panel" id="decor-emoji-panel"></div>
+              <div class="decor-panel hidden" id="decor-svg-panel"></div>
+              <div class="decor-panel hidden" id="decor-border-panel"></div>
+            </div>
+
             <!-- 页面属性 -->
-            <div class="sidebar-section">
+            <div class="sidebar-section props-section">
               <div class="sidebar-section-title">⚙️ 页面设置</div>
               <div class="prop-group">
                 <label class="prop-label">背景色</label>
@@ -149,15 +184,6 @@
                   <span class="bg-color-dot" data-bg="#F5FFF0" style="background:#F5FFF0" title="浅绿"></span>
                   <span class="bg-color-dot" data-bg="#FFFDF0" style="background:#FFFDF0" title="浅黄"></span>
                   <span class="bg-color-dot" data-bg="#F8F0FF" style="background:#F8F0FF" title="浅紫"></span>
-                </div>
-              </div>
-              <div class="prop-group">
-                <label class="prop-label">快速模板</label>
-                <div class="quick-templates" id="quick-templates">
-                  <button class="tpl-btn" data-tpl="1" title="单张大图">1</button>
-                  <button class="tpl-btn" data-tpl="2" title="左右双图">2</button>
-                  <button class="tpl-btn" data-tpl="3" title="上大下双">3</button>
-                  <button class="tpl-btn" data-tpl="4" title="四宫格">4</button>
                 </div>
               </div>
             </div>

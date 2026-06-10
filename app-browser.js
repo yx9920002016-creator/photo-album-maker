@@ -12,6 +12,10 @@ const API = {
   },
   async selectDirectory() {
     const resp = await fetch('/api/dir-select');
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || '服务器返回错误 ' + resp.status);
+    }
     const data = await resp.json();
     return data.path;
   }
@@ -46,6 +50,58 @@ const state = {
   // 文字属性
   textPropsVisible: false,
 };
+
+// ==================== 照片智能评分系统 ====================
+// 基于文件大小和文件名推测照片质量，给出 1-5 星评分
+// 规则：文件越大通常质量越高，文件名包含特定关键词加分
+const photoScoreCache = new Map();
+
+function scorePhoto(photo) {
+  if (photoScoreCache.has(photo.path)) return photoScoreCache.get(photo.path);
+  let score = 3; // 基础分
+
+  // 文件大小评分（越大越可能是高质量原图）
+  const sizeMB = (photo.size || 0) / (1024 * 1024);
+  if (sizeMB > 10) score += 2;
+  else if (sizeMB > 5) score += 1;
+  else if (sizeMB < 1) score -= 1;
+  else if (sizeMB < 0.3) score -= 2;
+
+  // 文件名关键词加分
+  const name = (photo.name || '').toLowerCase();
+  if (/best|精选|封面|cover|main/i.test(name)) score += 1;
+  if (/blur|模糊|temp|临时|截图|screenshot/i.test(name)) score -= 2;
+  if (/thumb|thumbnail|缩略图/i.test(name)) score -= 2;
+
+  // 限制范围 1-5
+  score = Math.max(1, Math.min(5, score));
+  photoScoreCache.set(photo.path, score);
+  return score;
+}
+
+function getScoreStars(score) {
+  return '⭐'.repeat(score) + '☆'.repeat(5 - score);
+}
+
+function getScoreColor(score) {
+  if (score >= 5) return '#f5a623';
+  if (score >= 4) return '#7ed321';
+  if (score >= 3) return '#4a90d9';
+  if (score >= 2) return '#9b9b9b';
+  return '#ccc';
+}
+
+let sortByScore = false;
+function setSortMode(byScore) {
+  sortByScore = byScore;
+  const btn = $('#btn-sort-score');
+  if (btn) {
+    btn.textContent = byScore ? '⭐ 按时间排序' : '⭐ 按评分排序';
+    btn.style.background = byScore ? 'var(--accent)' : '#f0f0f0';
+    btn.style.color = byScore ? 'white' : 'var(--text)';
+  }
+  if (state.currentYear) renderPhotoGrid(state.currentYear, state.currentMonth);
+}
 
 // ==================== DOM 引用 ====================
 const $ = (sel) => document.querySelector(sel);
@@ -135,10 +191,16 @@ async function loadDirectory(dir) {
 }
 $('#btn-select-dir').addEventListener('click', async () => {
   showLoading('正在打开目录选择对话框...');
-  const dir = await API.selectDirectory();
-  hideLoading();
-  if (!dir) return;
-  await loadDirectory(dir);
+  try {
+    const dir = await API.selectDirectory();
+    hideLoading();
+    if (!dir) return;
+    await loadDirectory(dir);
+  } catch (e) {
+    hideLoading();
+    console.error('选择目录失败:', e);
+    showToast('目录选择失败: ' + (e.message || '请检查服务器是否运行'));
+  }
 });
 $('#btn-load-dir').addEventListener('click', async () => {
   const dir = $('#dir-input').value.trim();
@@ -248,42 +310,143 @@ function renderPhotoGrid(yearFolder, monthFolder) {
   const searchTerm = ($('#search-input').value || '').toLowerCase();
   let filtered = photos;
   if (searchTerm) filtered = photos.filter(p => p.name.toLowerCase().includes(searchTerm));
-  const fragment = document.createDocumentFragment();
-  for (let idx = 0; idx < filtered.length; idx++) {
-    const photo = filtered[idx];
-    const card = document.createElement('div');
-    card.className = 'photo-card';
-    if (state.selectedPhotos.has(photo.path)) card.classList.add('selected');
-    card.dataset.path = photo.path;
-    card.dataset.idx = idx;
-    const img = document.createElement('img');
-    img.loading = 'lazy';
-    img.src = API.thumbnailUrl(photo.path);
-    img.alt = photo.name;
-    card.appendChild(img);
-    const check = document.createElement('div');
-    check.className = 'check-overlay';
-    check.textContent = state.selectedPhotos.has(photo.path) ? '✓' : '';
-    card.appendChild(check);
-    const name = document.createElement('div');
-    name.className = 'photo-name';
-    name.textContent = photo.name;
-    card.appendChild(name);
-    card.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleSelectPhoto(photo, card);
-    });
-    card.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      const realIdx = photos.indexOf(photo);
-      openLightbox(realIdx);
-    });
-    fragment.appendChild(card);
+
+  // 按评分排序
+  if (sortByScore) {
+    filtered = [...filtered].sort((a, b) => scorePhoto(b) - scorePhoto(a));
   }
-  grid.appendChild(fragment);
+
+  // 恢复缩放状态
+  const sliderVal = parseInt($('#grid-size-slider').value) || 2;
+  sizeClasses.forEach(c => grid.classList.remove(c));
+  grid.classList.add(sizeClasses[sliderVal - 1]);
+
+  // 渐进渲染：大量照片时分批渲染，避免一次性渲染几千张卡顿
+  const BATCH_SIZE = 80;
+  let renderedCount = 0;
+
+  function renderBatch() {
+    const fragment = document.createDocumentFragment();
+    const end = Math.min(renderedCount + BATCH_SIZE, filtered.length);
+    for (let idx = renderedCount; idx < end; idx++) {
+      const photo = filtered[idx];
+      const card = document.createElement('div');
+      card.className = 'photo-card';
+      if (state.selectedPhotos.has(photo.path)) card.classList.add('selected');
+      card.dataset.path = photo.path;
+      card.dataset.idx = idx;
+      // 使用 data-src 延迟加载图片
+      const img = document.createElement('img');
+      img.dataset.src = API.thumbnailUrl(photo.path);
+      img.alt = photo.name;
+      img.loading = 'lazy';
+      card.appendChild(img);
+      // 智能评分徽章
+      const score = scorePhoto(photo);
+      const scoreBadge = document.createElement('div');
+      scoreBadge.className = 'photo-score-badge';
+      scoreBadge.textContent = getScoreStars(score);
+      scoreBadge.style.color = getScoreColor(score);
+      scoreBadge.title = `推荐指数: ${score}/5 (文件大小: ${(photo.size / 1048576).toFixed(1)}MB)`;
+      card.appendChild(scoreBadge);
+      const check = document.createElement('div');
+      check.className = 'check-overlay';
+      check.textContent = state.selectedPhotos.has(photo.path) ? '✓' : '';
+      card.appendChild(check);
+      const name = document.createElement('div');
+      name.className = 'photo-name';
+      name.textContent = photo.name;
+      card.appendChild(name);
+      card.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // 点击缩略图 → 弹出大图预览
+        const realIdx = photos.indexOf(photo);
+        openLightbox(realIdx);
+      });
+      // 点击勾选圆圈 → 选入/取消精选
+      check.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleSelectPhoto(photo, card);
+      });
+      fragment.appendChild(card);
+    }
+    grid.appendChild(fragment);
+
+    // 加载本批可见的图片
+    loadBatchImages(grid);
+    renderedCount = end;
+
+    if (renderedCount < filtered.length) {
+      // 下一批，用 requestIdleCallback 或 setTimeout
+      requestAnimationFrame(() => {
+        setTimeout(renderBatch, 50);
+      });
+    }
+  }
+
+  // 先渲染第一批
+  renderedCount = 0;
+  renderBatch();
   updateSelectedCount();
 }
+
+// 加载一批图片的 src（从 data-src 读取）
+function loadBatchImages(grid) {
+  const imgs = grid.querySelectorAll('img[data-src]:not([src])');
+  const gridRect = grid.getBoundingClientRect();
+  const viewTop = gridRect.top - 300;
+  const viewBottom = gridRect.bottom + 300;
+
+  for (let i = 0; i < Math.min(imgs.length, 60); i++) {
+    const img = imgs[i];
+    const rect = img.getBoundingClientRect();
+    // 只加载可视区域附近的图片
+    if (rect.bottom > viewTop && rect.top < viewBottom) {
+      img.src = img.dataset.src;
+      img.removeAttribute('data-src');
+    }
+  }
+
+  // 滚动时加载更多
+  grid._lazyScroll = () => {
+    const remaining = grid.querySelectorAll('img[data-src]:not([src])');
+    const gRect = grid.getBoundingClientRect();
+    const vTop = gRect.top - 400;
+    const vBot = gRect.bottom + 400;
+    let loaded = 0;
+    for (let i = 0; i < Math.min(remaining.length, 40); i++) {
+      const img = remaining[i];
+      const r = img.getBoundingClientRect();
+      if (r.bottom > vTop && r.top < vBot) {
+        img.src = img.dataset.src;
+        img.removeAttribute('data-src');
+        loaded++;
+      }
+    }
+  };
+  grid.removeEventListener('scroll', grid._lazyScroll);
+  grid.addEventListener('scroll', grid._lazyScroll);
+}
+
 $('#search-input').addEventListener('input', () => {
+  if (state.currentYear) renderPhotoGrid(state.currentYear, state.currentMonth);
+});
+
+// 评分排序按钮
+$('#btn-sort-score').addEventListener('click', () => {
+  setSortMode(!sortByScore);
+});
+
+// 缩略图缩放滑块
+const sizeLabels = ['小', '中', '大'];
+const sizeClasses = ['size-sm', 'size-md', 'size-lg'];
+$('#grid-size-slider').addEventListener('input', (e) => {
+  const val = parseInt(e.target.value);
+  const grid = $('#photo-grid');
+  sizeClasses.forEach(c => grid.classList.remove(c));
+  grid.classList.add(sizeClasses[val - 1]);
+  $('#grid-size-label').textContent = sizeLabels[val - 1];
+  // 如果照片太多，用小图模式时自动开启渐进渲染
   if (state.currentYear) renderPhotoGrid(state.currentYear, state.currentMonth);
 });
 
@@ -304,6 +467,7 @@ function toggleSelectPhoto(photo, card) {
   }
   updateSelectedCount();
   renderSelectedPanel();
+  autoSave();
 }
 function updateSelectedCount() {
   $('#selected-count').textContent = `已选 ${state.selectedPhotos.size} 张`;
@@ -324,6 +488,7 @@ $('#btn-select-all').addEventListener('click', () => {
   });
   updateSelectedCount();
   renderSelectedPanel();
+  autoSave();
 });
 $('#btn-deselect-all').addEventListener('click', () => {
   $$('.photo-card').forEach(card => {
@@ -333,6 +498,7 @@ $('#btn-deselect-all').addEventListener('click', () => {
   state.selectedPhotos.clear();
   updateSelectedCount();
   renderSelectedPanel();
+  autoSave();
 });
 
 // ==================== 已选面板 ====================
@@ -357,6 +523,14 @@ function renderSelectedPanel() {
       const thumb = document.createElement('img');
       thumb.src = API.thumbnailUrl(photo.path);
       thumb.loading = 'lazy';
+      // 点击缩略图弹出大图预览
+      thumb.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // 把当前精选列表中的所有照片传给 lightbox
+        const allSelected = [...state.selectedPhotos.values()];
+        const idx = allSelected.indexOf(photo);
+        openLightboxForSelected(idx >= 0 ? idx : 0);
+      });
       item.appendChild(thumb);
       const info = document.createElement('div');
       info.className = 'info';
@@ -370,6 +544,7 @@ function renderSelectedPanel() {
         state.selectedPhotos.delete(photo.path);
         updateSelectedCount();
         renderSelectedPanel();
+        autoSave();
         const card = document.querySelector(`.photo-card[data-path="${CSS.escape(photo.path)}"]`);
         if (card) {
           card.classList.remove('selected');
@@ -388,6 +563,7 @@ $('#btn-clear-selected').addEventListener('click', () => {
   state.selectedPhotos.clear();
   updateSelectedCount();
   renderSelectedPanel();
+  autoSave();
   $$('.photo-card').forEach(c => {
     c.classList.remove('selected');
     c.querySelector('.check-overlay').textContent = '';
@@ -395,10 +571,24 @@ $('#btn-clear-selected').addEventListener('click', () => {
 });
 
 // ==================== 大图预览 ====================
+let lightboxPhotos = null; // 用于精选面板预览的照片数组
+
 function openLightbox(index) {
   state.lightboxIndex = index;
   const photo = state.currentPhotos[index];
   if (!photo) return;
+  lightboxPhotos = null; // 使用 currentPhotos
+  showLightboxPhoto(photo, index, state.currentPhotos.length);
+}
+function openLightboxForSelected(index) {
+  state.lightboxIndex = index;
+  const photos = [...state.selectedPhotos.values()];
+  lightboxPhotos = photos;
+  const photo = photos[index];
+  if (!photo) return;
+  showLightboxPhoto(photo, index, photos.length);
+}
+function showLightboxPhoto(photo, index, total) {
   $('#lightbox-img').src = API.fullImageUrl(photo.path);
   $('#lightbox-filename').textContent = photo.name;
   $('#lightbox').classList.remove('hidden');
@@ -409,7 +599,7 @@ function openLightbox(index) {
     selectBtn.textContent = '⭐ 选入精选';
   }
   $('#lightbox-prev').style.display = index > 0 ? 'flex' : 'none';
-  $('#lightbox-next').style.display = index < state.currentPhotos.length - 1 ? 'flex' : 'none';
+  $('#lightbox-next').style.display = index < total - 1 ? 'flex' : 'none';
 }
 function closeLightbox() {
   $('#lightbox').classList.add('hidden');
@@ -417,16 +607,31 @@ function closeLightbox() {
 }
 $('#lightbox .lightbox-overlay').addEventListener('click', closeLightbox);
 $('#lightbox .lightbox-close').addEventListener('click', closeLightbox);
+function getLightboxTotal() {
+  return lightboxPhotos ? lightboxPhotos.length : state.currentPhotos.length;
+}
+function getLightboxPhoto(index) {
+  return lightboxPhotos ? lightboxPhotos[index] : state.currentPhotos[index];
+}
+function navigateLightbox(direction) {
+  const newIdx = state.lightboxIndex + direction;
+  if (newIdx < 0 || newIdx >= getLightboxTotal()) return;
+  if (lightboxPhotos) {
+    openLightboxForSelected(newIdx);
+  } else {
+    openLightbox(newIdx);
+  }
+}
 $('#lightbox-prev').addEventListener('click', (e) => {
   e.stopPropagation();
-  if (state.lightboxIndex > 0) openLightbox(state.lightboxIndex - 1);
+  navigateLightbox(-1);
 });
 $('#lightbox-next').addEventListener('click', (e) => {
   e.stopPropagation();
-  if (state.lightboxIndex < state.currentPhotos.length - 1) openLightbox(state.lightboxIndex + 1);
+  navigateLightbox(1);
 });
 $('#btn-lightbox-select').addEventListener('click', () => {
-  const photo = state.currentPhotos[state.lightboxIndex];
+  const photo = getLightboxPhoto(state.lightboxIndex);
   if (!photo) return;
   const card = document.querySelector(`.photo-card[data-path="${CSS.escape(photo.path)}"]`);
   toggleSelectPhoto(photo, card);
@@ -436,11 +641,99 @@ $('#btn-lightbox-select').addEventListener('click', () => {
     $('#btn-lightbox-select').textContent = '⭐ 选入精选';
   }
 });
+// ==================== 撤销历史栈 ====================
+const undoStack = [];
+const MAX_UNDO = 50;
+
+function pushUndoState() {
+  // 保存 albumPages 的深拷贝
+  const snapshot = JSON.parse(JSON.stringify(state.albumPages));
+  // 去重：如果和栈顶相同就不推入
+  if (undoStack.length > 0) {
+    const last = undoStack[undoStack.length - 1];
+    if (JSON.stringify(last) === JSON.stringify(snapshot)) return;
+  }
+  undoStack.push(snapshot);
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+}
+
+function undo() {
+  if (undoStack.length <= 1) {
+    showToast('没有更多可撤销的操作');
+    return;
+  }
+  // 弹出当前状态，恢复到上一个
+  undoStack.pop();
+  const prev = undoStack[undoStack.length - 1];
+  state.albumPages = JSON.parse(JSON.stringify(prev));
+  renderAlbumPages();
+  showToast('↩ 已撤销');
+}
+
+// ==================== 键盘快捷键 ====================
 document.addEventListener('keydown', (e) => {
+  // 不处理输入框中的按键
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.isContentEditable) return;
+
+  const key = e.key.toLowerCase();
+  const ctrl = e.ctrlKey || e.metaKey;
+
+  // 全局快捷键（所有视图都可用）
   if (e.key === 'Escape') closeLightbox();
   if (!$('#lightbox').classList.contains('hidden')) {
-    if (e.key === 'ArrowLeft' && state.lightboxIndex > 0) openLightbox(state.lightboxIndex - 1);
-    if (e.key === 'ArrowRight' && state.lightboxIndex < state.currentPhotos.length - 1) openLightbox(state.lightboxIndex + 1);
+    if (e.key === 'ArrowLeft') navigateLightbox(-1);
+    if (e.key === 'ArrowRight') navigateLightbox(1);
+    return; // 灯箱模式下不处理其他快捷键
+  }
+
+  // Ctrl+S 保存
+  if (ctrl && key === 's') {
+    e.preventDefault();
+    $('#btn-save').click();
+    return;
+  }
+
+  // Ctrl+Z 撤销
+  if (ctrl && key === 'z') {
+    e.preventDefault();
+    if (state.currentView === 'layout') undo();
+    return;
+  }
+
+  // 排版视图专属快捷键
+  if (state.currentView === 'layout') {
+    const sel = state.selectedElement;
+    if (!sel) return;
+
+    // Delete / Backspace 删除选中元素
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      const pageIndex = parseInt(sel.pageEl.dataset.pageIndex);
+      const page = state.albumPages[pageIndex];
+      if (page) {
+        pushUndoState();
+        page.elements = page.elements.filter(el => el.id !== sel.el.id);
+        state.selectedElement = null;
+        hideTextPropsBar();
+        renderAlbumPages();
+        showToast('🗑 已删除');
+      }
+      return;
+    }
+
+    // 方向键微调位置（每次1px，Shift+方向键=10px）
+    const step = e.shiftKey ? 10 : 1;
+    let moved = false;
+    if (e.key === 'ArrowLeft') { sel.el.x = Math.max(0, sel.el.x - step); moved = true; }
+    if (e.key === 'ArrowRight') { sel.el.x = Math.min(sel.pageEl.offsetWidth - sel.el.w, sel.el.x + step); moved = true; }
+    if (e.key === 'ArrowUp') { sel.el.y = Math.max(0, sel.el.y - step); moved = true; }
+    if (e.key === 'ArrowDown') { sel.el.y = Math.min(sel.pageEl.offsetHeight - sel.el.h, sel.el.y + step); moved = true; }
+    if (moved) {
+      e.preventDefault();
+      sel.elDiv.style.left = sel.el.x + 'px';
+      sel.elDiv.style.top = sel.el.y + 'px';
+    }
   }
 });
 
@@ -569,52 +862,145 @@ function renderAlbumPages() {
   const container = $('#album-pages');
   container.innerHTML = '';
   if (state.albumPages.length === 0) {
+    editingPageIndex = null;
     container.innerHTML = `
-      <div style="text-align:center;padding:60px;color:#999;">
+      <div class="empty-pages-hint" style="text-align:center;padding:60px;color:#999;min-height:300px;">
         <div style="font-size:48px;margin-bottom:16px;">📐</div>
         <div style="font-size:16px;margin-bottom:8px;">还没有排版</div>
         <div style="font-size:13px;">请先在选片视图中精选照片，然后点击 ✨"自动排版"</div>
+        <div style="font-size:11px;margin-top:10px;color:#bbb;">💡 也可以直接将装饰素材拖到这里创建空白页</div>
       </div>
     `;
     renderPageNav();
     renderUnusedPhotos();
     return;
   }
+
+  // 确保当前编辑页索引有效
+  if (editingPageIndex === null || editingPageIndex >= state.albumPages.length) {
+    editingPageIndex = 0;
+  }
+
+  const pageIndex = editingPageIndex;
+  const page = state.albumPages[pageIndex];
   const pageWidth = 620;
   const pageHeight = Math.round(pageWidth / 0.705);
-  state.albumPages.forEach((page, pageIndex) => {
-    const pageEl = document.createElement('div');
-    pageEl.className = 'album-page free-layout-page';
-    pageEl.style.width = pageWidth + 'px';
-    pageEl.style.height = pageHeight + 'px';
-    pageEl.dataset.pageIndex = pageIndex;
-    // 自定义背景色
-    if (page.bgColor) {
-      pageEl.style.background = page.bgColor;
+
+  const pageEl = document.createElement('div');
+  pageEl.className = 'album-page free-layout-page';
+  pageEl.style.width = pageWidth + 'px';
+  pageEl.style.height = pageHeight + 'px';
+  pageEl.dataset.pageIndex = pageIndex;
+  if (page.bgColor) {
+    pageEl.style.background = page.bgColor;
+  }
+
+  // 工具栏
+  addFreePageToolbar(pageEl, page, pageIndex);
+
+  // 渲染所有元素
+  if (page.elements) {
+    page.elements.forEach(el => {
+      renderElement(pageEl, page, el, pageIndex);
+    });
+  }
+
+  // ===== 拖拽放置区域 =====
+  pageEl.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('application/decor-type')) {
+      e.dataTransfer.dropEffect = 'copy';
+    } else {
+      e.dataTransfer.dropEffect = 'move';
     }
-
-    // 工具栏
-    addFreePageToolbar(pageEl, page, pageIndex);
-
-    // 渲染所有元素
-    if (page.elements) {
-      page.elements.forEach(el => {
-        renderElement(pageEl, page, el, pageIndex);
-      });
-    }
-
-    // 页码
-    const pageNum = document.createElement('div');
-    pageNum.className = 'page-number';
-    pageNum.textContent = `${pageIndex + 1}`;
-    pageEl.appendChild(pageNum);
-
-    container.appendChild(pageEl);
+    pageEl.classList.add('drag-over');
   });
-  
+  pageEl.addEventListener('dragleave', () => {
+    pageEl.classList.remove('drag-over');
+  });
+  pageEl.addEventListener('drop', (e) => {
+    e.preventDefault();
+    pageEl.classList.remove('drag-over');
+    handleDropOnPage(e, page, pageIndex);
+  });
+
+  // 页码
+  const pageNum = document.createElement('div');
+  pageNum.className = 'page-number';
+  pageNum.textContent = `${pageIndex + 1} / ${state.albumPages.length}`;
+  pageEl.appendChild(pageNum);
+
+  // 页面底部：添加新页面按钮
+  const addNextBtn = document.createElement('button');
+  addNextBtn.className = 'page-add-next-btn';
+  addNextBtn.innerHTML = '<span>+</span> 添加新页面';
+  addNextBtn.title = '在末尾添加新页面';
+  addNextBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.albumPages.push({
+      type: 'free',
+      yearLabel: '',
+      elements: []
+    });
+    editingPageIndex = state.albumPages.length - 1;
+    renderAlbumPages();
+    renderPageNav();
+    updateActivePageNav();
+  });
+  pageEl.appendChild(addNextBtn);
+
+  // 翻页按钮：上一页 / 下一页
+  const navRow = document.createElement('div');
+  navRow.className = 'page-nav-arrows';
+  navRow.style.cssText = 'display:flex;justify-content:center;align-items:center;gap:16px;margin-top:16px;';
+
+  const prevBtn = document.createElement('button');
+  prevBtn.className = 'btn btn-sm btn-outline';
+  prevBtn.textContent = '◀ 上一页';
+  prevBtn.disabled = (pageIndex === 0);
+  prevBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (pageIndex > 0) {
+      editingPageIndex = pageIndex - 1;
+      renderAlbumPages();
+      renderPageNav();
+      updateActivePageNav();
+      updatePagePropsPanel();
+    }
+  });
+
+  const pageIndicator = document.createElement('span');
+  pageIndicator.style.cssText = 'font-size:13px;color:#888;';
+  pageIndicator.textContent = `${pageIndex + 1} / ${state.albumPages.length}`;
+
+  const nextBtn = document.createElement('button');
+  nextBtn.className = 'btn btn-sm btn-outline';
+  nextBtn.textContent = '下一页 ▶';
+  nextBtn.disabled = (pageIndex === state.albumPages.length - 1);
+  nextBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (pageIndex < state.albumPages.length - 1) {
+      editingPageIndex = pageIndex + 1;
+      renderAlbumPages();
+      renderPageNav();
+      updateActivePageNav();
+      updatePagePropsPanel();
+    }
+  });
+
+  navRow.appendChild(prevBtn);
+  navRow.appendChild(pageIndicator);
+  navRow.appendChild(nextBtn);
+
+  container.appendChild(pageEl);
+  container.appendChild(navRow);
+
   // 渲染右侧面板
   renderPageNav();
   renderUnusedPhotos();
+  updateActivePageNav();
+  updatePagePropsPanel();
+  autoSave();
 }
 
 // 渲染单个元素（照片或文字）
@@ -632,9 +1018,22 @@ function renderElement(pageEl, page, el, pageIndex) {
 
   if (el.type === 'photo') {
     elDiv.classList.add('free-photo');
+    elDiv.draggable = true;
     if (el.photo) {
+      // 拖拽开始
+      elDiv.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('application/element-id', el.id);
+        e.dataTransfer.setData('application/page-index', String(pageIndex));
+        e.dataTransfer.setData('application/photo-path', el.photo.path);
+        e.dataTransfer.effectAllowed = 'move';
+        elDiv.classList.add('dragging');
+      });
+      elDiv.addEventListener('dragend', () => {
+        elDiv.classList.remove('dragging');
+      });
       const img = document.createElement('img');
       img.src = API.thumbnailUrl(el.photo.path);
+      img.draggable = false; // 阻止图片默认拖拽，使用外层 div 的拖拽
       img.style.cssText = 'width:100%;height:100%;object-fit:cover;';
       // 边框样式
       if (el.frame === 'rounded') img.style.borderRadius = '12px';
@@ -722,14 +1121,20 @@ function renderElement(pageEl, page, el, pageIndex) {
     elDiv.appendChild(handle);
   });
 
-  // 删除按钮
+  // 删除/退回按钮
   const delBtn = document.createElement('button');
   delBtn.className = 'element-delete-btn';
   delBtn.textContent = '×';
-  delBtn.title = '删除元素';
+  delBtn.title = el.type === 'photo' && el.photo ? '退回素材库' : '删除元素';
   delBtn.addEventListener('click', (e) => {
     e.stopPropagation();
-    page.elements = page.elements.filter(e => e.id !== el.id);
+    if (el.type === 'photo' && el.photo) {
+      // 退回素材库：从页面移除，照片回到待用素材
+      removeElementFromPage(page, el);
+    } else {
+      // 非照片元素直接删除
+      page.elements = page.elements.filter(e => e.id !== el.id);
+    }
     if (state.selectedElement && state.selectedElement.el.id === el.id) {
       state.selectedElement = null;
       hideTextPropsBar();
@@ -758,6 +1163,13 @@ function renderElement(pageEl, page, el, pageIndex) {
     // textarea 内部的点击由 textarea 自己的 mousedown 处理（stopPropagation），不会到这里
     // 如果点击的是 textarea 且冒泡到了这里（理论上不会），也不触发拖拽
     if (e.target.tagName === 'TEXTAREA') return;
+    // 照片元素：使用原生 HTML5 拖拽，不能 preventDefault，否则 dragstart 无法触发
+    if (el.type === 'photo' && el.photo) {
+      // 仅选中，不阻止默认行为，让浏览器处理拖拽
+      e.stopPropagation();
+      selectElementWithoutDrag(el, elDiv, pageEl);
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     selectElement(el, elDiv, pageEl, e);
@@ -771,6 +1183,15 @@ function renderElement(pageEl, page, el, pageIndex) {
   }
 
   pageEl.appendChild(elDiv);
+}
+
+// 选中元素但不开始自定义拖拽（用于照片元素，由原生 HTML5 拖拽处理移动）
+function selectElementWithoutDrag(el, elDiv, pageEl) {
+  $$('.free-element').forEach(d => d.classList.remove('selected'));
+  elDiv.classList.add('selected');
+  state.selectedElement = { el, elDiv, pageEl };
+  state.isDragging = false;
+  updateTextPropsBar(el);
 }
 
 // 选中元素并开始拖拽
@@ -791,18 +1212,136 @@ function selectElement(el, elDiv, pageEl, e) {
 }
 
 // 全局鼠标事件（拖拽和调整大小）
+const SNAP_THRESHOLD = 6; // 吸附阈值 6px
+const ALIGN_GUIDE_ID = 'align-guide-overlay';
+
+function getAlignGuides(draggingEl, pageEl, page) {
+  const guides = { h: [], v: [] }; // { pos, type }
+  const dLeft = draggingEl.x, dRight = draggingEl.x + draggingEl.w;
+  const dTop = draggingEl.y, dBottom = draggingEl.y + draggingEl.h;
+  const dCx = draggingEl.x + draggingEl.w / 2;
+  const dCy = draggingEl.y + draggingEl.h / 2;
+
+  // 画布中线
+  const pw = pageEl.offsetWidth, ph = pageEl.offsetHeight;
+  guides.v.push({ pos: pw / 2, type: 'canvas-center' });
+  guides.h.push({ pos: ph / 2, type: 'canvas-center' });
+
+  // 其他元素的对齐线
+  if (page.elements) {
+    page.elements.forEach(other => {
+      if (other === draggingEl) return;
+      const oLeft = other.x, oRight = other.x + other.w;
+      const oTop = other.y, oBottom = other.y + other.h;
+      const oCx = other.x + other.w / 2;
+      const oCy = other.y + other.h / 2;
+
+      // 水平对齐线（Y轴方向）
+      guides.h.push({ pos: oTop, type: 'top' });
+      guides.h.push({ pos: oBottom, type: 'bottom' });
+      guides.h.push({ pos: oCy, type: 'center' });
+      // 垂直对齐线（X轴方向）
+      guides.v.push({ pos: oLeft, type: 'left' });
+      guides.v.push({ pos: oRight, type: 'right' });
+      guides.v.push({ pos: oCx, type: 'center' });
+    });
+  }
+
+  // 匹配吸附
+  const result = { snapX: null, snapY: null, hGuides: [], vGuides: [] };
+  // 垂直对齐（X方向）
+  for (const g of guides.v) {
+    if (Math.abs(dLeft - g.pos) < SNAP_THRESHOLD) {
+      result.snapX = g.pos;
+      result.vGuides.push({ pos: g.pos, type: 'left', target: g.type });
+      break;
+    }
+    if (Math.abs(dRight - g.pos) < SNAP_THRESHOLD) {
+      result.snapX = g.pos - draggingEl.w;
+      result.vGuides.push({ pos: g.pos, type: 'right', target: g.type });
+      break;
+    }
+    if (Math.abs(dCx - g.pos) < SNAP_THRESHOLD) {
+      result.snapX = g.pos - draggingEl.w / 2;
+      result.vGuides.push({ pos: g.pos, type: 'center', target: g.type });
+      break;
+    }
+  }
+  // 水平对齐（Y方向）
+  for (const g of guides.h) {
+    if (Math.abs(dTop - g.pos) < SNAP_THRESHOLD) {
+      result.snapY = g.pos;
+      result.hGuides.push({ pos: g.pos, type: 'top', target: g.type });
+      break;
+    }
+    if (Math.abs(dBottom - g.pos) < SNAP_THRESHOLD) {
+      result.snapY = g.pos - draggingEl.h;
+      result.hGuides.push({ pos: g.pos, type: 'bottom', target: g.type });
+      break;
+    }
+    if (Math.abs(dCy - g.pos) < SNAP_THRESHOLD) {
+      result.snapY = g.pos - draggingEl.h / 2;
+      result.hGuides.push({ pos: g.pos, type: 'center', target: g.type });
+      break;
+    }
+  }
+  return result;
+}
+
+function showAlignGuides(pageEl, guides) {
+  let overlay = pageEl.querySelector(`.${ALIGN_GUIDE_ID}`);
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.className = ALIGN_GUIDE_ID;
+    overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:100;';
+    pageEl.appendChild(overlay);
+  }
+  overlay.innerHTML = '';
+  const ph = pageEl.offsetHeight;
+  guides.vGuides.forEach(g => {
+    const line = document.createElement('div');
+    line.style.cssText = `position:absolute;left:${g.pos}px;top:0;width:1px;height:${ph}px;background:#ff4081;opacity:0.8;`;
+    overlay.appendChild(line);
+  });
+  guides.hGuides.forEach(g => {
+    const line = document.createElement('div');
+    line.style.cssText = `position:absolute;left:0;top:${g.pos}px;width:100%;height:1px;background:#ff4081;opacity:0.8;`;
+    overlay.appendChild(line);
+  });
+}
+
+function hideAlignGuides(pageEl) {
+  const overlay = pageEl.querySelector(`.${ALIGN_GUIDE_ID}`);
+  if (overlay) overlay.remove();
+}
+
 document.addEventListener('mousemove', (e) => {
   if (state.isDragging && state.selectedElement) {
     e.preventDefault();
     const { el, elDiv, pageEl } = state.selectedElement;
+    const pageIndex = parseInt(pageEl.dataset.pageIndex);
+    const page = state.albumPages[pageIndex];
     const pageRect = pageEl.getBoundingClientRect();
     let newX = e.clientX - pageRect.left - state.dragOffset.x;
     let newY = e.clientY - pageRect.top - state.dragOffset.y;
+
     // 限制在页面内
     const maxX = pageEl.offsetWidth - el.w;
     const maxY = pageEl.offsetHeight - el.h;
     newX = Math.max(0, Math.min(newX, maxX));
     newY = Math.max(0, Math.min(newY, maxY));
+
+    // 对齐辅助线检测
+    const tempEl = { ...el, x: newX, y: newY };
+    const align = getAlignGuides(tempEl, pageEl, page);
+    if (align.snapX !== null) newX = align.snapX;
+    if (align.snapY !== null) newY = align.snapY;
+    if (align.vGuides.length > 0 || align.hGuides.length > 0) {
+      showAlignGuides(pageEl, align);
+    } else {
+      hideAlignGuides(pageEl);
+    }
+
     el.x = Math.round(newX);
     el.y = Math.round(newY);
     elDiv.style.left = el.x + 'px';
@@ -853,7 +1392,25 @@ document.addEventListener('mousemove', (e) => {
   }
 });
 
+let _dragStarted = false;
+document.addEventListener('mousedown', (e) => {
+  // 标记即将开始拖拽/调整大小/旋转（在 selectElement 之后）
+  if (e.target.closest('.free-element') || e.target.classList.contains('resize-handle') || e.target.classList.contains('rotate-handle')) {
+    if (!_dragStarted) {
+      pushUndoState();
+      _dragStarted = true;
+    }
+  }
+});
+
 document.addEventListener('mouseup', () => {
+  // 清除对齐辅助线
+  if (state.selectedElement && state.selectedElement.pageEl) {
+    hideAlignGuides(state.selectedElement.pageEl);
+  }
+  if (state.isDragging || state.isResizing || state.isRotating) {
+    _dragStarted = false;
+  }
   state.isDragging = false;
   state.isResizing = false;
   state.isRotating = false;
@@ -1281,6 +1838,18 @@ function renderPreviewElement(pageEl, el, zoom) {
     if (el.opacity) textDiv.style.opacity = el.opacity;
     textDiv.textContent = el.text || '';
     elDiv.appendChild(textDiv);
+  } else if (el.type === 'decor') {
+    if (el.subtype === 'emoji') {
+      const span = document.createElement('span');
+      span.textContent = el.emoji;
+      span.style.cssText = `font-size:${(el.fontSize || 40) * zoom}px;line-height:1;display:flex;align-items:center;justify-content:center;width:100%;height:100%;`;
+      elDiv.appendChild(span);
+    } else if (el.subtype === 'svg' || el.subtype === 'border') {
+      const svgWrap = document.createElement('div');
+      svgWrap.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;';
+      svgWrap.innerHTML = el.svgContent;
+      elDiv.appendChild(svgWrap);
+    }
   }
 
   pageEl.appendChild(elDiv);
@@ -1325,7 +1894,8 @@ $('#btn-save').addEventListener('click', () => {
   a.download = '相册排版.album';
   a.click();
   URL.revokeObjectURL(url);
-  showToast('项目已保存');
+  _hasUnsavedChanges = false;
+  showToast('✅ 项目已保存（已下载 .album 文件）');
 });
 
 $('#btn-open').addEventListener('click', () => {
@@ -1573,6 +2143,18 @@ function renderExportElement(pageEl, el, scaleX, scaleY) {
     if (el.opacity) textDiv.style.opacity = el.opacity;
     textDiv.textContent = el.text || '';
     elDiv.appendChild(textDiv);
+  } else if (el.type === 'decor') {
+    if (el.subtype === 'emoji') {
+      const span = document.createElement('span');
+      span.textContent = el.emoji;
+      span.style.cssText = `font-size:${(el.fontSize || 40) * scaleX}px;line-height:1;display:flex;align-items:center;justify-content:center;width:100%;height:100%;`;
+      elDiv.appendChild(span);
+    } else if (el.subtype === 'svg' || el.subtype === 'border') {
+      const svgWrap = document.createElement('div');
+      svgWrap.style.cssText = 'width:100%;height:100%;display:flex;align-items:center;justify-content:center;';
+      svgWrap.innerHTML = el.svgContent;
+      elDiv.appendChild(svgWrap);
+    }
   }
   pageEl.appendChild(elDiv);
 }
@@ -1727,7 +2309,7 @@ function renderPageNav() {
     return;
   }
   
-  countEl.textContent = `共${state.albumPages.length}页`;
+  countEl.textContent = `${state.albumPages.length}`;
   
   state.albumPages.forEach((page, pageIndex) => {
     const item = document.createElement('div');
@@ -1758,35 +2340,11 @@ function renderPageNav() {
     }
     item.appendChild(thumb);
     
-    // 页面信息
-    const info = document.createElement('div');
-    info.className = 'page-nav-info';
+    // 页码
     const num = document.createElement('div');
     num.className = 'page-nav-num';
-    num.textContent = `第${pageIndex + 1}页`;
-    info.appendChild(num);
-    
-    // 年份标签 + 元素数量
-    const detail = document.createElement('div');
-    detail.className = 'page-nav-detail';
-    const label = page.yearLabel || '';
-    const elCount = page.elements ? page.elements.length : 0;
-    const photoCount = page.elements ? page.elements.filter(e => e.type === 'photo' && e.photo).length : 0;
-    const textCount = page.elements ? page.elements.filter(e => e.type === 'text').length : 0;
-    const parts = [];
-    if (label) parts.push(label);
-    if (photoCount > 0) parts.push(`${photoCount}图`);
-    if (textCount > 0) parts.push(`${textCount}文`);
-    if (parts.length === 0) parts.push('空白');
-    detail.textContent = parts.join(' · ');
-    info.appendChild(detail);
-    
-    item.appendChild(info);
-    
-    // 点击跳转
-    item.addEventListener('click', () => {
-      scrollToPage(pageIndex);
-    });
+    num.textContent = `P${pageIndex + 1}`;
+    item.appendChild(num);
     
     container.appendChild(item);
   });
@@ -1796,47 +2354,30 @@ function renderPageNav() {
 }
 
 function scrollToPage(pageIndex) {
-  const pageEl = document.querySelector(`.album-page[data-page-index="${pageIndex}"]`);
-  if (pageEl) {
-    pageEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    // 高亮导航项
-    $$('.page-nav-item').forEach(item => item.classList.remove('active'));
-    const navItem = document.querySelector(`.page-nav-item[data-page-index="${pageIndex}"]`);
-    if (navItem) navItem.classList.add('active');
-  }
+  // 切换到指定页面
+  editingPageIndex = pageIndex;
+  renderAlbumPages();
+  renderPageNav();
+  updateActivePageNav();
+  updatePagePropsPanel();
 }
 
 function updateActivePageNav() {
-  const mainArea = document.querySelector('.layout-main');
-  if (!mainArea) return;
-  
-  let currentIdx = -1;
-  let minDist = Infinity;
-  const centerY = mainArea.scrollTop + mainArea.clientHeight / 2;
-  
-  $$('.album-page').forEach(pageEl => {
-    const rect = pageEl.getBoundingClientRect();
-    const mainRect = mainArea.getBoundingClientRect();
-    const pageCenter = rect.top - mainRect.top + mainArea.scrollTop + rect.height / 2;
-    const dist = Math.abs(pageCenter - centerY);
-    if (dist < minDist) {
-      minDist = dist;
-      currentIdx = parseInt(pageEl.dataset.pageIndex);
-    }
-  });
-  
+  const currentIdx = editingPageIndex;
   $$('.page-nav-item').forEach(item => {
     item.classList.toggle('active', parseInt(item.dataset.pageIndex) === currentIdx);
   });
+  
+  // 左侧缩略图导航：自动滚动到当前高亮的项
+  const activeNav = document.querySelector('.layout-thumbnails .page-nav-item.active');
+  if (activeNav) {
+    activeNav.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
 }
 
-// 监听画布区域滚动更新页面导航高亮
-let pageNavScrollTimer = null;
-document.addEventListener('scroll', (e) => {
-  if (e.target.closest('.layout-main')) {
-    if (pageNavScrollTimer) clearTimeout(pageNavScrollTimer);
-    pageNavScrollTimer = setTimeout(updateActivePageNav, 100);
-  }
+// 左侧缩略图导航容器滚动（独立滚动区域，不冒泡）
+document.querySelector('.layout-thumbnails')?.addEventListener('scroll', (e) => {
+  e.stopPropagation();
 }, true);
 
 // ==================== 右侧面板：未使用素材 ====================
@@ -1871,38 +2412,66 @@ function renderUnusedPhotos() {
   const unused = getUnusedPhotos();
   countEl.textContent = unused.length > 0 ? `${unused.length}张` : '';
   
+  // 素材区作为 drop zone：接收从页面拖回的照片
+  container.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    container.classList.add('unused-drag-over');
+  });
+  container.addEventListener('dragleave', () => {
+    container.classList.remove('unused-drag-over');
+  });
+  container.addEventListener('drop', (e) => {
+    e.preventDefault();
+    container.classList.remove('unused-drag-over');
+    handleDropOnUnused(e);
+  });
+  
   if (unused.length === 0) {
-    container.innerHTML = '<div class="unused-empty">全部素材已排版 ✓</div>';
+    container.innerHTML = '<div class="unused-empty">全部素材已排版 ✓<br><small style="font-size:10px;">可将页面照片拖回此处</small></div>';
     return;
   }
   
   unused.forEach(photo => {
     const item = document.createElement('div');
     item.className = 'unused-photo-item';
+    item.draggable = true;
+    item.dataset.photoPath = photo.path;
     const img = document.createElement('img');
     img.src = API.thumbnailUrl(photo.path);
     img.loading = 'lazy';
+    img.draggable = false; // 阻止图片默认拖拽
     item.appendChild(img);
-    
+
     const hint = document.createElement('div');
     hint.className = 'unused-hint';
-    hint.textContent = '点击添加';
+    hint.textContent = '拖拽或点击';
     item.appendChild(hint);
-    
+
+    // 拖拽开始：设置拖拽数据
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/photo-path', photo.path);
+      e.dataTransfer.effectAllowed = 'move';
+      item.classList.add('dragging');
+    });
+    item.addEventListener('dragend', () => {
+      item.classList.remove('dragging');
+    });
+
+    // 点击仍然可以添加
     item.addEventListener('click', () => {
-      // 添加到当前最后一页（或最接近当前视口的页面）
       addUnusedPhotoToAlbum(photo);
     });
-    
+
     container.appendChild(item);
   });
 }
 
 function addUnusedPhotoToAlbum(photo) {
   if (state.albumPages.length === 0) return;
-  
+
   // 找到当前视口中最接近的页面
-  let targetIndex = state.albumPages.length - 1; // 默认最后一页
+  let targetIndex = state.albumPages.length - 1;
   const mainArea = document.querySelector('.layout-main');
   if (mainArea) {
     let minDist = Infinity;
@@ -1918,38 +2487,184 @@ function addUnusedPhotoToAlbum(photo) {
       }
     });
   }
-  
+
   const page = state.albumPages[targetIndex];
   if (!page.elements) page.elements = [];
-  
-  // 智能计算位置：放在已有元素旁边
-  let x = 60, y = 60;
-  const existingPhotos = page.elements.filter(e => e.type === 'photo' && e.photo);
-  if (existingPhotos.length > 0) {
-    // 放在最后一个照片元素旁边，偏移一些
-    const last = existingPhotos[existingPhotos.length - 1];
-    x = last.x + last.w + 20;
-    y = last.y;
-    // 如果超出页面，换行
-    if (x + 200 > 620) {
-      x = 60;
-      y = last.y + last.h + 20;
+
+  // 计算页面剩余空间，智能决定是放入当前页还是新建页面
+  const pw = 620, ph = Math.round(620 / 0.705);
+  const margin = 30;
+  const photoW = 200, photoH = 200;
+
+  // 查找可用空位（简单网格扫描）
+  function findFreeRect(w, h) {
+    const occupied = page.elements
+      .filter(e => e.type === 'photo' && e.photo)
+      .map(e => ({ x: e.x, y: e.y, w: e.w, h: e.h }));
+
+    // 尝试几个预设位置
+    const candidates = [
+      { x: margin, y: margin },
+      { x: pw - margin - w, y: margin },
+      { x: margin, y: ph - margin - h },
+      { x: pw - margin - w, y: ph - margin - h },
+      { x: (pw - w) / 2, y: margin },
+      { x: margin, y: (ph - h) / 2 },
+      { x: (pw - w) / 2, y: (ph - h) / 2 },
+    ];
+
+    for (const pos of candidates) {
+      const rect = { x: pos.x, y: pos.y, w, h };
+      if (rect.x < margin || rect.y < margin) continue;
+      if (rect.x + rect.w > pw - margin) continue;
+      if (rect.y + rect.h > ph - margin) continue;
+      const overlap = occupied.some(o =>
+        rect.x < o.x + o.w + 10 && rect.x + rect.w + 10 > o.x &&
+        rect.y < o.y + o.h + 10 && rect.y + rect.h + 10 > o.y
+      );
+      if (!overlap) return rect;
     }
+    return null;
   }
-  
-  page.elements.push({
+
+  let pos = findFreeRect(photoW, photoH);
+
+  // 如果当前页没有空位，自动创建新页面
+  if (!pos) {
+    targetIndex = targetIndex + 1;
+    const newPage = {
+      type: 'free',
+      yearLabel: page.yearLabel || '',
+      elements: []
+    };
+    state.albumPages.splice(targetIndex, 0, newPage);
+    pos = { x: margin, y: margin };
+  }
+
+  const targetPage = state.albumPages[targetIndex];
+  if (!targetPage.elements) targetPage.elements = [];
+
+  targetPage.elements.push({
     type: 'photo', id: newElementId(),
-    x, y, w: 200, h: 200,
+    x: Math.round(pos.x), y: Math.round(pos.y),
+    w: photoW, h: photoH,
     photo, caption: '', frame: state.frameStyle
   });
-  
+
+  editingPageIndex = targetIndex;
   renderAlbumPages();
   showToast(`已将 "${photo.name}" 添加到第${targetIndex + 1}页`);
+}
+
+// ==================== 拖拽处理函数 ====================
+
+// 从页面移除元素（照片元素退回素材库）
+function removeElementFromPage(page, el) {
+  page.elements = page.elements.filter(e => e.id !== el.id);
+}
+
+// 处理拖拽放置到页面
+function handleDropOnPage(e, page, pageIndex) {
+  const photoPath = e.dataTransfer.getData('application/photo-path');
+  const elementId = e.dataTransfer.getData('application/element-id');
+  const fromPageIndex = e.dataTransfer.getData('application/page-index');
+
+  // 情况1：从素材库拖来
+  if (photoPath && !elementId) {
+    // 从 selectedPhotos 中找到对应照片
+    const photo = [...state.selectedPhotos.values()].find(p => p.path === photoPath);
+    if (!photo) return;
+    // 添加到目标页面
+    addPhotoToPage(page, photo, e, pageIndex);
+    return;
+  }
+
+  // 情况2：从其他页面拖来（移动元素到不同页面）
+  if (elementId && fromPageIndex !== undefined && fromPageIndex !== String(pageIndex)) {
+    const fromPage = state.albumPages[parseInt(fromPageIndex)];
+    const elIdx = fromPage.elements.findIndex(e => e.id === elementId);
+    if (elIdx < 0) return;
+    const [el] = fromPage.elements.splice(elIdx, 1);
+    if (!page.elements) page.elements = [];
+    // 计算放置位置
+    const pageRect = e.target.closest('.album-page').getBoundingClientRect();
+    el.x = Math.round(e.clientX - pageRect.left - el.w / 2);
+    el.y = Math.round(e.clientY - pageRect.top - el.h / 2);
+    el.x = Math.max(0, Math.min(el.x, 620 - el.w));
+    el.y = Math.max(0, Math.min(el.y, Math.round(620 / 0.705) - el.h));
+    page.elements.push(el);
+    renderAlbumPages();
+    return;
+  }
+
+  // 情况3：同页面内拖拽移动位置
+  if (elementId && fromPageIndex !== undefined && fromPageIndex === String(pageIndex)) {
+    const el = page.elements.find(e => e.id === elementId);
+    if (!el) return;
+    // 计算新位置
+    const pageRect = e.target.closest('.album-page').getBoundingClientRect();
+    el.x = Math.round(e.clientX - pageRect.left - el.w / 2);
+    el.y = Math.round(e.clientY - pageRect.top - el.h / 2);
+    el.x = Math.max(0, Math.min(el.x, 620 - el.w));
+    el.y = Math.max(0, Math.min(el.y, Math.round(620 / 0.705) - el.h));
+    renderAlbumPages();
+    return;
+  }
+}
+
+// 处理拖拽放置到素材区（从页面退回）
+function handleDropOnUnused(e) {
+  const elementId = e.dataTransfer.getData('application/element-id');
+  const pageIndex = e.dataTransfer.getData('application/page-index');
+  if (!elementId || pageIndex === undefined) return;
+  const page = state.albumPages[parseInt(pageIndex)];
+  if (!page || !page.elements) return;
+  const el = page.elements.find(el => el.id === elementId);
+  if (!el || el.type !== 'photo' || !el.photo) return;
+  // 从页面移除，照片回到素材库（自动由 getUnusedPhotos 计算）
+  removeElementFromPage(page, el);
+  if (state.selectedElement && state.selectedElement.el.id === el.id) {
+    state.selectedElement = null;
+    hideTextPropsBar();
+  }
+  renderAlbumPages();
+  showToast(`已将 "${el.photo.name}" 退回素材库`);
+}
+
+// 添加照片到指定页面（拖拽版本，使用鼠标位置计算坐标）
+function addPhotoToPage(page, photo, dropEvent, pageIndex) {
+  if (!page.elements) page.elements = [];
+  const pageEl = dropEvent.target.closest('.album-page');
+  if (!pageEl) return;
+  const pageRect = pageEl.getBoundingClientRect();
+  const x = Math.round(dropEvent.clientX - pageRect.left - 100);
+  const y = Math.round(dropEvent.clientY - pageRect.top - 100);
+  const clampedX = Math.max(0, Math.min(x, 620 - 200));
+  const clampedY = Math.max(0, Math.min(y, Math.round(620 / 0.705) - 200));
+  page.elements.push({
+    type: 'photo', id: newElementId(),
+    x: clampedX, y: clampedY,
+    w: 200, h: 200,
+    photo, caption: '', frame: state.frameStyle
+  });
+  editingPageIndex = pageIndex;
+  renderAlbumPages();
+  showToast(`已将 "${photo.name}" 拖入第${pageIndex + 1}页`);
 }
 
 // ==================== 右侧面板：页面属性 ====================
 // 当前选中的页面索引（用于属性编辑）
 let editingPageIndex = null;
+
+// 模板配置：每个模板需要的最大照片数
+const TEMPLATE_CONFIG = {
+  1: { maxPhotos: 1, name: '单张大图' },
+  2: { maxPhotos: 2, name: '左右双图' },
+  3: { maxPhotos: 3, name: '上大下双' },
+  4: { maxPhotos: 4, name: '四宫格' },
+  5: { maxPhotos: 3, name: '左大右双' },
+  6: { maxPhotos: 3, name: '三图横排' }
+};
 
 // 页面背景色切换
 $$('#page-bg-colors .bg-color-dot').forEach(dot => {
@@ -1971,82 +2686,165 @@ $$('#page-bg-colors .bg-color-dot').forEach(dot => {
 // 快速模板应用
 $$('#quick-templates .tpl-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    if (editingPageIndex === null || editingPageIndex >= state.albumPages.length) {
+    // 自动选择当前可视页面（如果没有手动选择）
+    let targetIndex = editingPageIndex;
+    if (targetIndex === null || targetIndex >= state.albumPages.length) {
+      const mainArea = document.querySelector('.layout-main');
+      if (mainArea && state.albumPages.length > 0) {
+        let minDist = Infinity;
+        const centerY = mainArea.scrollTop + mainArea.clientHeight / 2;
+        $$('.album-page').forEach(pageEl => {
+          const rect = pageEl.getBoundingClientRect();
+          const mainRect = mainArea.getBoundingClientRect();
+          const pageCenter = rect.top - mainRect.top + mainArea.scrollTop + rect.height / 2;
+          const dist = Math.abs(pageCenter - centerY);
+          if (dist < minDist) { minDist = dist; targetIndex = parseInt(pageEl.dataset.pageIndex); }
+        });
+      }
+    }
+    if (targetIndex === null || targetIndex >= state.albumPages.length) {
       showToast('请先在页面导航中选择一个页面');
       return;
     }
+    editingPageIndex = targetIndex;
+    // 高亮导航项
+    $$('.page-nav-item').forEach(item => item.classList.remove('active'));
+    const navItem = document.querySelector(`.page-nav-item[data-page-index="${targetIndex}"]`);
+    if (navItem) navItem.classList.add('active');
+
     const tpl = parseInt(btn.dataset.tpl);
-    const page = state.albumPages[editingPageIndex];
-    
+    const page = state.albumPages[targetIndex];
+    if (!page.elements) page.elements = [];
+    pushUndoState();
+
     // 收集当前页面的照片元素（保留照片引用）
-    const existingPhotos = page.elements ? page.elements.filter(e => e.type === 'photo' && e.photo) : [];
-    const existingTexts = page.elements ? page.elements.filter(e => e.type === 'text') : [];
-    
-    // 清空并重新布局
-    page.elements = [...existingTexts]; // 保留文字
-    
-    const pw = 620, ph = Math.round(620 / 0.705);
-    const photos = existingPhotos.map(e => e.photo);
-    
-    if (photos.length === 0) {
-      showToast('当前页面没有照片');
+    const existingPhotos = page.elements.filter(e => e.type === 'photo' && e.photo).map(e => e.photo);
+    const existingTexts = page.elements.filter(e => e.type === 'text');
+    const existingDecors = page.elements.filter(e => e.type === 'decor');
+
+    // 如果当前页面照片不够，自动从未使用照片中补充
+    const needed = TEMPLATE_CONFIG[tpl].maxPhotos;
+    while (existingPhotos.length < needed && state.unusedPhotos && state.unusedPhotos.length > 0) {
+      existingPhotos.push(state.unusedPhotos.shift());
+    }
+
+    // 如果 still 不够，从所有已选照片中补充（排除已在页面中的）
+    if (existingPhotos.length === 0) {
+      const allSelected = [...state.selectedPhotos.values()];
+      const usedPaths = new Set();
+      state.albumPages.forEach(p => {
+        if (p.elements) {
+          p.elements.forEach(e => { if (e.type === 'photo' && e.photo) usedPaths.add(e.photo.path); });
+        }
+      });
+      const available = allSelected.filter(p => !usedPaths.has(p.path));
+      if (available.length > 0) {
+        existingPhotos.push(...available.slice(0, needed));
+      }
+    }
+
+    if (existingPhotos.length === 0) {
+      showToast('没有可用照片，请先在选片视图中精选照片');
       return;
     }
-    
+
+    // 清空并重新布局（保留文字和装饰）
+    page.elements = [...existingTexts, ...existingDecors];
+
+    const pw = 620, ph = Math.round(620 / 0.705);
+    const photos = existingPhotos;
+
     if (tpl === 1) {
       // 单张大图
       page.elements.push({
         type: 'photo', id: newElementId(),
-        x: 60, y: 60, w: 500, h: ph - 120,
+        x: 40, y: 50, w: pw - 80, h: ph - 100,
         photo: photos[0], caption: '', frame: state.frameStyle
       });
     } else if (tpl === 2) {
       // 左右双图
-      const halfW = 280;
+      const gap = 16, margin = 30;
+      const w = Math.floor((pw - margin * 2 - gap) / 2);
+      const h = ph - 100;
       for (let i = 0; i < Math.min(2, photos.length); i++) {
         page.elements.push({
           type: 'photo', id: newElementId(),
-          x: 30 + i * 300, y: 60, w: halfW, h: ph - 120,
+          x: margin + i * (w + gap), y: 50, w, h,
           photo: photos[i], caption: '', frame: state.frameStyle
         });
       }
     } else if (tpl === 3) {
       // 上大下双
-      if (photos.length >= 1) {
-        page.elements.push({
-          type: 'photo', id: newElementId(),
-          x: 30, y: 40, w: 560, h: Math.round((ph - 120) * 0.55),
-          photo: photos[0], caption: '', frame: state.frameStyle
-        });
-      }
+      const gap = 14, margin = 30;
+      const topH = Math.round((ph - 90) * 0.58);
+      const bottomH = ph - 90 - topH - gap;
+      const bottomW = Math.floor((pw - margin * 2 - gap) / 2);
+      page.elements.push({
+        type: 'photo', id: newElementId(),
+        x: margin, y: 40, w: pw - margin * 2, h: topH,
+        photo: photos[0], caption: '', frame: state.frameStyle
+      });
       for (let i = 1; i < Math.min(3, photos.length); i++) {
         page.elements.push({
           type: 'photo', id: newElementId(),
-          x: 30 + (i - 1) * 290, y: Math.round((ph - 120) * 0.55 + 60),
-          w: 270, h: Math.round((ph - 120) * 0.4),
+          x: margin + (i - 1) * (bottomW + gap), y: 40 + topH + gap,
+          w: bottomW, h: bottomH,
           photo: photos[i], caption: '', frame: state.frameStyle
         });
       }
     } else if (tpl === 4) {
       // 四宫格
-      const halfW = 270;
-      const halfH = Math.round((ph - 120) / 2);
+      const gap = 14, margin = 30;
+      const w = Math.floor((pw - margin * 2 - gap) / 2);
+      const h = Math.floor((ph - 90 - gap) / 2);
       for (let i = 0; i < Math.min(4, photos.length); i++) {
         page.elements.push({
           type: 'photo', id: newElementId(),
-          x: 30 + (i % 2) * 290, y: 40 + Math.floor(i / 2) * (halfH + 10),
-          w: halfW, h: halfH,
+          x: margin + (i % 2) * (w + gap), y: 40 + Math.floor(i / 2) * (h + gap),
+          w, h,
+          photo: photos[i], caption: '', frame: state.frameStyle
+        });
+      }
+    } else if (tpl === 5) {
+      // 左大右双
+      const gap = 14, margin = 30;
+      const leftW = Math.round((pw - margin * 2 - gap) * 0.55);
+      const rightH = Math.floor((ph - 90 - gap) / 2);
+      const rightW = pw - margin * 2 - leftW - gap;
+      page.elements.push({
+        type: 'photo', id: newElementId(),
+        x: margin, y: 45, w: leftW, h: ph - 90,
+        photo: photos[0], caption: '', frame: state.frameStyle
+      });
+      for (let i = 1; i < Math.min(3, photos.length); i++) {
+        page.elements.push({
+          type: 'photo', id: newElementId(),
+          x: margin + leftW + gap, y: 45 + (i - 1) * (rightH + gap),
+          w: rightW, h: rightH,
+          photo: photos[i], caption: '', frame: state.frameStyle
+        });
+      }
+    } else if (tpl === 6) {
+      // 三图横排
+      const gap = 14, margin = 30;
+      const w = Math.floor((pw - margin * 2 - gap * 2) / 3);
+      const h = ph - 100;
+      for (let i = 0; i < Math.min(3, photos.length); i++) {
+        page.elements.push({
+          type: 'photo', id: newElementId(),
+          x: margin + i * (w + gap), y: 50, w, h,
           photo: photos[i], caption: '', frame: state.frameStyle
         });
       }
     }
-    
+
     // 高亮模板按钮
     $$('#quick-templates .tpl-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    
+
     renderAlbumPages();
-    showToast('模板已应用');
+    renderUnusedPhotos();
+    showToast(`模板「${btn.title}」已应用到第${targetIndex + 1}页`);
   });
 });
 
@@ -2054,9 +2852,14 @@ $$('#quick-templates .tpl-btn').forEach(btn => {
 document.addEventListener('click', (e) => {
   const navItem = e.target.closest('.page-nav-item');
   if (navItem) {
-    editingPageIndex = parseInt(navItem.dataset.pageIndex);
-    // 更新属性面板状态
-    updatePagePropsPanel();
+    const pageIndex = parseInt(navItem.dataset.pageIndex);
+    if (pageIndex !== editingPageIndex) {
+      editingPageIndex = pageIndex;
+      renderAlbumPages();
+      renderPageNav();
+      updateActivePageNav();
+      updatePagePropsPanel();
+    }
   }
 });
 
@@ -2070,8 +2873,496 @@ function updatePagePropsPanel() {
   });
 }
 
+// ==================== 装饰素材库 ====================
+
+// Emoji 素材（按分类）
+const DECOR_EMOJI = {
+  '🌸 花朵': ['🌸','🌺','🌻','🌹','🌷','🌼','💐','🪷','🥀','💮','🏵️','🌾','🌿','🍀','☘️','🍃','🌱','🪴'],
+  '🐾 动物': ['🐶','🐱','🐰','🐻','🐼','🐨','🐯','🦊','🐸','🐣','🐥','🦋','🐞','🐝','🐌','🦄','🐙','🐠'],
+  '⭐ 星星': ['⭐','🌟','✨','💫','🌠','🔆','💥','🎇','🎆','🔥','☀️','🌈','☁️','❄️','💧','🫧'],
+  '❤️ 爱心': ['❤️','🧡','💛','💚','💙','💜','🤎','🖤','🤍','💕','💗','💖','💝','💘','💓','💞','♥️','🩷'],
+  '🎀 装饰': ['🎀','🎁','🎈','🎊','🎉','🏆','👑','💎','🔔','🎵','🎶','📷','🕊️','🪶','🧸','🫧'],
+  '📅 标记': ['📍','📌','📎','🖇️','✂️','📏','🖊️','✏️','📝','🗒️','📅','🕐','📖','🔖','🏷️'],
+  '🍰 美食': ['🍰','🧁','🍩','🍪','🎂','🍭','🍬','🍫','🍦','🍓','🍒','🍑','🍊','🍋','🥑'],
+  '✿ 符号': ['♪','♫','☮','✿','❀','✾','❁','⚘','❋','✦','✧','◈','◆','◇','❖','➤','∞','∴']
+};
+
+// SVG 装饰定义
+const DECOR_SVG = [
+  { name: '粉色小花', svg: '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="14" fill="#FFB7B2"/><circle cx="35" cy="38" r="12" fill="#FF9AA2"/><circle cx="65" cy="38" r="12" fill="#FF9AA2"/><circle cx="35" cy="62" r="12" fill="#FF9AA2"/><circle cx="65" cy="62" r="12" fill="#FF9AA2"/><circle cx="50" cy="50" r="8" fill="#FFDAC1"/></svg>' },
+  { name: '金色星星', svg: '<svg viewBox="0 0 100 100"><polygon points="50,5 61,35 94,35 68,57 79,91 50,70 21,91 32,57 6,35 39,35" fill="#F5C97E" stroke="#E8A840" stroke-width="1.5"/></svg>' },
+  { name: '爱心', svg: '<svg viewBox="0 0 100 100"><path d="M50 85 C20 60, 0 45, 0 28 C0 14, 14 5, 28 5 C38 5, 46 12, 50 20 C54 12, 62 5, 72 5 C86 5, 100 14, 100 28 C100 45, 80 60, 50 85Z" fill="#FF6B6B"/></svg>' },
+  { name: '绿色四叶草', svg: '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="10" fill="#7FB069"/><circle cx="35" cy="38" r="14" fill="#A3C9A8"/><circle cx="65" cy="38" r="14" fill="#A3C9A8"/><circle cx="35" cy="62" r="14" fill="#A3C9A8"/><circle cx="65" cy="62" r="14" fill="#A3C9A8"/><rect x="47" y="55" width="6" height="30" rx="3" fill="#7FB069"/></svg>' },
+  { name: '蓝色水滴', svg: '<svg viewBox="0 0 100 100"><path d="M50 10 C50 10, 20 50, 20 68 C20 84, 33 95, 50 95 C67 95, 80 84, 80 68 C80 50, 50 10, 50 10Z" fill="#8BB8D6" opacity="0.85"/><ellipse cx="40" cy="60" rx="6" ry="10" fill="white" opacity="0.4" transform="rotate(-20 40 60)"/></svg>' },
+  { name: '圆点花环', svg: '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="none" stroke="#E8A0B4" stroke-width="1.5" stroke-dasharray="4,6"/><circle cx="50" cy="50" r="32" fill="none" stroke="#F5C97E" stroke-width="1" stroke-dasharray="3,7"/><circle cx="50" cy="15" r="6" fill="#FFB7B2"/><circle cx="76" cy="28" r="5" fill="#FFDAC1"/><circle cx="82" cy="55" r="5" fill="#A3C9A8"/><circle cx="72" cy="78" r="6" fill="#8BB8D6"/><circle cx="50" cy="85" r="5" fill="#F5C97E"/><circle cx="28" cy="78" r="5" fill="#E8A0B4"/><circle cx="18" cy="55" r="6" fill="#FFB7B2"/><circle cx="24" cy="28" r="5" fill="#C5E0C8"/></svg>' },
+  { name: '蝴蝶', svg: '<svg viewBox="0 0 100 100"><ellipse cx="35" cy="40" rx="18" ry="12" fill="#F4B5C2" opacity="0.8" transform="rotate(-15 35 40)"/><ellipse cx="65" cy="40" rx="18" ry="12" fill="#F4B5C2" opacity="0.8" transform="rotate(15 65 40)"/><ellipse cx="35" cy="58" rx="12" ry="9" fill="#FAD1D8" opacity="0.8" transform="rotate(-10 35 58)"/><ellipse cx="65" cy="58" rx="12" ry="9" fill="#FAD1D8" opacity="0.8" transform="rotate(10 65 58)"/><rect x="48" y="30" width="4" height="40" rx="2" fill="#8B7355"/><line x1="50" y1="25" x2="38" y2="18" stroke="#8B7355" stroke-width="2"/><line x1="50" y1="25" x2="62" y2="18" stroke="#8B7355" stroke-width="2"/><circle cx="38" cy="18" r="3" fill="#E8A0B4"/><circle cx="62" cy="18" r="3" fill="#E8A0B4"/></svg>' },
+  { name: '月亮', svg: '<svg viewBox="0 0 100 100"><path d="M60 10 C45 10, 30 25, 30 50 C30 75, 45 90, 60 90 C50 78, 45 65, 45 50 C45 35, 50 22, 60 10Z" fill="#F5C97E"/></svg>' },
+  { name: '云朵', svg: '<svg viewBox="0 0 100 100"><circle cx="30" cy="55" r="18" fill="white" opacity="0.9"/><circle cx="48" cy="45" r="24" fill="white" opacity="0.9"/><circle cx="68" cy="52" r="20" fill="white" opacity="0.9"/><circle cx="82" cy="58" r="14" fill="white" opacity="0.9"/><rect x="25" y="56" width="60" height="22" rx="11" fill="white" opacity="0.9"/></svg>' },
+  { name: '太阳', svg: '<svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="20" fill="#F5C97E"/><line x1="50" y1="18" x2="50" y2="8" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="50" y1="82" x2="50" y2="92" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="18" y1="50" x2="8" y2="50" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="82" y1="50" x2="92" y2="50" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="27" y1="27" x2="20" y2="20" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="73" y1="73" x2="80" y2="80" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="73" y1="27" x2="80" y2="20" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/><line x1="27" y1="73" x2="20" y2="80" stroke="#F5C97E" stroke-width="3" stroke-linecap="round"/></svg>' },
+  { name: '钻石', svg: '<svg viewBox="0 0 100 100"><polygon points="50,8 85,40 50,92 15,40" fill="#C5E0C8" stroke="#A3C9A8" stroke-width="2"/><polygon points="50,8 50,50 85,40" fill="white" opacity="0.3"/><polygon points="50,50 85,40 50,92" fill="#7FB085" opacity="0.4"/></svg>' },
+  { name: '羽毛', svg: '<svg viewBox="0 0 100 100"><path d="M20 80 Q35 50, 50 30 Q55 15, 70 10 Q60 30, 80 50 Q70 35, 55 45 Q50 55, 45 70 Q50 55, 40 40 Q35 55, 20 80Z" fill="#FAD1D8" stroke="#E8A0B4" stroke-width="1"/><line x1="20" y1="80" x2="70" y2="10" stroke="#D4889A" stroke-width="2"/></svg>' },
+  { name: '音符', svg: '<svg viewBox="0 0 100 100"><circle cx="30" cy="70" r="10" fill="#8BB8D6"/><circle cx="65" cy="45" r="10" fill="#A8D8EA"/><line x1="40" y1="70" x2="75" y2="45" stroke="#6A9FC0" stroke-width="3"/><line x1="40" y1="70" x2="40" y2="20" stroke="#6A9FC0" stroke-width="3"/><line x1="75" y1="45" x2="75" y2="15" stroke="#6A9FC0" stroke-width="3"/><path d="M40 20 Q55 15, 55 25" fill="none" stroke="#6A9FC0" stroke-width="2"/><path d="M75 15 Q90 10, 90 20" fill="none" stroke="#6A9FC0" stroke-width="2"/></svg>' },
+  { name: '气球', svg: '<svg viewBox="0 0 100 100"><ellipse cx="50" cy="42" rx="22" ry="28" fill="#F4B5C2"/><ellipse cx="38" cy="35" rx="6" ry="8" fill="white" opacity="0.4" transform="rotate(-20 38 35)"/><polygon points="50,70 46,72 54,72" fill="#E894A6"/><path d="M50 72 Q48 80, 45 85" fill="none" stroke="#999" stroke-width="1.5"/><ellipse cx="18" cy="25" rx="16" ry="20" fill="#A8D8EA"/><ellipse cx="12" cy="20" rx="4" ry="6" fill="white" opacity="0.4"/><polygon points="18,45 15,47 21,47" fill="#8BB8D6"/><path d="M18 47 Q16 52, 14 55" fill="none" stroke="#999" stroke-width="1.5"/></svg>' },
+  { name: '彩虹', svg: '<svg viewBox="0 0 100 100"><path d="M10 80 Q50 -10, 90 80" fill="none" stroke="#FF6B6B" stroke-width="6" opacity="0.7"/><path d="M16 80 Q50 0, 84 80" fill="none" stroke="#F5C97E" stroke-width="6" opacity="0.7"/><path d="M22 80 Q50 10, 78 80" fill="none" stroke="#A3C9A8" stroke-width="6" opacity="0.7"/><path d="M28 80 Q50 20, 72 80" fill="none" stroke="#8BB8D6" stroke-width="6" opacity="0.7"/><path d="M34 80 Q50 30, 66 80" fill="none" stroke="#E8A0B4" stroke-width="6" opacity="0.7"/></svg>' },
+];
+
+// 花边边框定义
+const DECOR_BORDERS = [
+  { name: '圆点花边', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="8" fill="none" stroke="#E8A0B4" stroke-width="2" stroke-dasharray="2,6" stroke-linecap="round"/><circle cx="20" cy="30" r="4" fill="#FFB7B2"/><circle cx="60" cy="30" r="4" fill="#FFDAC1"/><circle cx="100" cy="30" r="4" fill="#A3C9A8"/><circle cx="140" cy="30" r="4" fill="#8BB8D6"/><circle cx="180" cy="30" r="4" fill="#F5C97E"/></svg>' },
+  { name: '波浪边框', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="6" fill="none" stroke="#8BB8D6" stroke-width="2"/><path d="M10 30 Q30 18, 50 30 Q70 42, 90 30 Q110 18, 130 30 Q150 42, 170 30 Q190 18, 195 30" fill="none" stroke="#A8D8EA" stroke-width="1.5"/></svg>' },
+  { name: '藤蔓花边', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="6" fill="none" stroke="#A3C9A8" stroke-width="2"/><path d="M15 30 Q30 20, 40 30 Q55 18, 65 30 Q80 20, 90 30 Q105 18, 115 30 Q130 20, 140 30 Q155 18, 165 30 Q180 20, 190 30" fill="none" stroke="#7FB069" stroke-width="1.5"/><circle cx="30" cy="24" r="3" fill="#C5E0C8"/><circle cx="65" cy="22" r="3" fill="#C5E0C8"/><circle cx="100" cy="24" r="3" fill="#C5E0C8"/><circle cx="135" cy="22" r="3" fill="#C5E0C8"/><circle cx="170" cy="24" r="3" fill="#C5E0C8"/></svg>' },
+  { name: '爱心花边', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="6" fill="none" stroke="#F4B5C2" stroke-width="2"/><path d="M40 30 C40 26, 36 22, 32 26 C28 30, 40 38, 40 38 C40 38, 52 30, 48 26 C44 22, 40 26, 40 30Z" fill="#FFB7B2" opacity="0.6" transform="translate(0,-6) scale(0.8)"/><path d="M90 30 C90 26, 86 22, 82 26 C78 30, 90 38, 90 38 C90 38, 102 30, 98 26 C94 22, 90 26, 90 30Z" fill="#FFB7B2" opacity="0.6" transform="translate(0,-6) scale(0.8)"/><path d="M140 30 C140 26, 136 22, 132 26 C128 30, 140 38, 140 38 C140 38, 152 30, 148 26 C144 22, 140 26, 140 30Z" fill="#FFB7B2" opacity="0.6" transform="translate(0,-6) scale(0.8)"/></svg>' },
+  { name: '星点花边', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="6" fill="none" stroke="#F5C97E" stroke-width="2"/><polygon points="40,20 42,26 48,26 43,30 45,36 40,32 35,36 37,30 32,26 38,26" fill="#F5C97E" opacity="0.5"/><polygon points="100,20 102,26 108,26 103,30 105,36 100,32 95,36 97,30 92,26 98,26" fill="#F5C97E" opacity="0.5"/><polygon points="160,20 162,26 168,26 163,30 165,36 160,32 155,36 157,30 152,26 158,26" fill="#F5C97E" opacity="0.5"/></svg>' },
+  { name: '双层边框', svg: '<svg viewBox="0 0 200 60"><rect x="8" y="8" width="184" height="44" rx="4" fill="none" stroke="#E8A0B4" stroke-width="1"/><rect x="4" y="4" width="192" height="52" rx="6" fill="none" stroke="#D4889A" stroke-width="1.5"/><circle cx="18" cy="30" r="2" fill="#F5C97E"/><circle cx="182" cy="30" r="2" fill="#F5C97E"/></svg>' },
+  { name: '虚线边框', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="4" fill="none" stroke="#C4A882" stroke-width="1.5" stroke-dasharray="8,4"/><rect x="12" y="12" width="176" height="36" rx="3" fill="none" stroke="#D4B896" stroke-width="1" stroke-dasharray="4,4"/></svg>' },
+  { name: '蕾丝花边', svg: '<svg viewBox="0 0 200 60"><rect x="5" y="5" width="190" height="50" rx="6" fill="none" stroke="#FAD1D8" stroke-width="2"/><circle cx="30" cy="10" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="70" cy="10" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="110" cy="10" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="150" cy="10" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="190" cy="10" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="50" cy="50" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="90" cy="50" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="130" cy="50" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/><circle cx="170" cy="50" r="5" fill="none" stroke="#F4B5C2" stroke-width="1.5"/></svg>' },
+];
+
+// 渲染装饰素材面板
+function renderDecorPanels() {
+  // Emoji 面板
+  const emojiPanel = $('#decor-emoji-panel');
+  emojiPanel.innerHTML = '';
+  for (const [category, emojis] of Object.entries(DECOR_EMOJI)) {
+    const label = document.createElement('div');
+    label.className = 'decor-cat-label';
+    label.textContent = category;
+    emojiPanel.appendChild(label);
+    emojis.forEach(emoji => {
+      const item = document.createElement('div');
+      item.className = 'decor-item';
+      item.textContent = emoji;
+      item.title = emoji;
+      item.draggable = true;
+      item.dataset.decorType = 'emoji';
+      item.dataset.decorData = emoji;
+      item.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('application/decor-type', 'emoji');
+        e.dataTransfer.setData('application/decor-data', emoji);
+        e.dataTransfer.effectAllowed = 'copy';
+        item.classList.add('dragging');
+      });
+      item.addEventListener('dragend', () => item.classList.remove('dragging'));
+      item.addEventListener('click', () => addDecorToPage('emoji', emoji));
+      emojiPanel.appendChild(item);
+    });
+  }
+
+  // SVG 面板
+  const svgPanel = $('#decor-svg-panel');
+  svgPanel.innerHTML = '';
+  DECOR_SVG.forEach((decor, idx) => {
+    const item = document.createElement('div');
+    item.className = 'decor-item';
+    item.title = decor.name;
+    item.draggable = true;
+    item.dataset.decorType = 'svg';
+    item.dataset.decorData = String(idx);
+    const thumb = document.createElement('div');
+    thumb.className = 'decor-svg-thumb';
+    thumb.innerHTML = decor.svg;
+    item.appendChild(thumb);
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/decor-type', 'svg');
+      e.dataTransfer.setData('application/decor-data', String(idx));
+      e.dataTransfer.effectAllowed = 'copy';
+      item.classList.add('dragging');
+    });
+    item.addEventListener('dragend', () => item.classList.remove('dragging'));
+    item.addEventListener('click', () => addDecorToPage('svg', String(idx)));
+    svgPanel.appendChild(item);
+  });
+
+  // 花边面板
+  const borderPanel = $('#decor-border-panel');
+  borderPanel.innerHTML = '';
+  DECOR_BORDERS.forEach((border, idx) => {
+    const item = document.createElement('div');
+    item.className = 'decor-item';
+    item.title = border.name;
+    item.draggable = true;
+    item.dataset.decorType = 'border';
+    item.dataset.decorData = String(idx);
+    const thumb = document.createElement('div');
+    thumb.className = 'decor-svg-thumb';
+    thumb.innerHTML = border.svg;
+    item.appendChild(thumb);
+    const label = document.createElement('div');
+    label.style.cssText = 'position:absolute;bottom:2px;font-size:8px;color:#999;text-align:center;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    label.textContent = border.name;
+    item.appendChild(label);
+    item.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('application/decor-type', 'border');
+      e.dataTransfer.setData('application/decor-data', String(idx));
+      e.dataTransfer.effectAllowed = 'copy';
+      item.classList.add('dragging');
+    });
+    item.addEventListener('dragend', () => item.classList.remove('dragging'));
+    item.addEventListener('click', () => addDecorToPage('border', String(idx)));
+    borderPanel.appendChild(item);
+  });
+}
+
+// 装饰素材标签页切换
+function switchDecorTab(tabName) {
+  $$('.decor-tab').forEach(t => t.classList.remove('active'));
+  const activeTab = document.querySelector(`.decor-tab[data-decor-tab="${tabName}"]`);
+  if (activeTab) activeTab.classList.add('active');
+  $('#decor-emoji-panel').classList.toggle('hidden', tabName !== 'emoji');
+  $('#decor-svg-panel').classList.toggle('hidden', tabName !== 'svg');
+  $('#decor-border-panel').classList.toggle('hidden', tabName !== 'border');
+}
+
+// 将装饰元素添加到当前页面
+function addDecorToPage(type, data) {
+  if (state.albumPages.length === 0) {
+    // 没有页面时，自动创建一个空白页
+    if (state.selectedPhotos.size === 0) {
+      showToast('请先在选片视图中精选照片，或点击"自动排版"');
+      return;
+    }
+    // 创建空白自由排版页
+    state.albumPages.push({
+      type: 'free',
+      elements: []
+    });
+    renderAlbumPages();
+    showToast('已自动创建空白页面');
+  }
+
+  // 找到当前视口中最接近的页面
+  let targetIndex = state.albumPages.length - 1;
+  const mainArea = document.querySelector('.layout-main');
+  if (mainArea) {
+    let minDist = Infinity;
+    const centerY = mainArea.scrollTop + mainArea.clientHeight / 2;
+    $$('.album-page').forEach(pageEl => {
+      const rect = pageEl.getBoundingClientRect();
+      const mainRect = mainArea.getBoundingClientRect();
+      const pageCenter = rect.top - mainRect.top + mainArea.scrollTop + rect.height / 2;
+      const dist = Math.abs(pageCenter - centerY);
+      if (dist < minDist) { minDist = dist; targetIndex = parseInt(pageEl.dataset.pageIndex); }
+    });
+  }
+
+  const page = state.albumPages[targetIndex];
+  if (!page.elements) page.elements = [];
+
+  const elId = newElementId();
+  let el;
+  if (type === 'emoji') {
+    el = {
+      type: 'decor',
+      subtype: 'emoji',
+      id: elId,
+      x: 60, y: 60, w: 60, h: 60,
+      emoji: data,
+      fontSize: 40
+    };
+  } else if (type === 'svg') {
+    const svgDef = DECOR_SVG[parseInt(data)];
+    el = {
+      type: 'decor',
+      subtype: 'svg',
+      id: elId,
+      x: 60, y: 60, w: 80, h: 80,
+      svgContent: svgDef.svg,
+      svgName: svgDef.name
+    };
+  } else if (type === 'border') {
+    const borderDef = DECOR_BORDERS[parseInt(data)];
+    const pageW = 620;
+    const pageH = Math.round(620 / 0.705);
+    el = {
+      type: 'decor',
+      subtype: 'border',
+      id: elId,
+      x: 10, y: 10, w: pageW - 20, h: pageH - 20,
+      svgContent: borderDef.svg,
+      svgName: borderDef.name
+    };
+  }
+  if (el) {
+    page.elements.push(el);
+    editingPageIndex = targetIndex;
+    renderAlbumPages();
+    const name = type === 'emoji' ? data : (type === 'svg' ? DECOR_SVG[parseInt(data)].name : DECOR_BORDERS[parseInt(data)].name);
+    showToast(`已添加「${name}」到第${targetIndex + 1}页`);
+  }
+}
+
+// 页面 drop 事件需要支持装饰素材的拖入
+const _origHandleDropOnPage = handleDropOnPage;
+handleDropOnPage = function(e, page, pageIndex) {
+  const decorType = e.dataTransfer.getData('application/decor-type');
+  const decorData = e.dataTransfer.getData('application/decor-data');
+  if (decorType) {
+    // 装饰素材拖入
+    if (!page.elements) page.elements = [];
+    const elId = newElementId();
+    const pageRect = e.target.closest('.album-page').getBoundingClientRect();
+    let newX = Math.round(e.clientX - pageRect.left - 40);
+    let newY = Math.round(e.clientY - pageRect.top - 40);
+    newX = Math.max(0, Math.min(newX, 620 - 80));
+    newY = Math.max(0, Math.min(newY, Math.round(620 / 0.705) - 80));
+    let el;
+    if (decorType === 'emoji') {
+      el = { type: 'decor', subtype: 'emoji', id: elId, x: newX, y: newY, w: 60, h: 60, emoji: decorData, fontSize: 40 };
+    } else if (decorType === 'svg') {
+      const svgDef = DECOR_SVG[parseInt(decorData)];
+      el = { type: 'decor', subtype: 'svg', id: elId, x: newX, y: newY, w: 80, h: 80, svgContent: svgDef.svg, svgName: svgDef.name };
+    } else if (decorType === 'border') {
+      const borderDef = DECOR_BORDERS[parseInt(decorData)];
+      el = { type: 'decor', subtype: 'border', id: elId, x: 10, y: 10, w: 600, h: Math.round(620 / 0.705) - 20, svgContent: borderDef.svg, svgName: borderDef.name };
+    }
+    if (el) {
+      page.elements.push(el);
+      renderAlbumPages();
+      const name = decorType === 'emoji' ? decorData : (decorType === 'svg' ? DECOR_SVG[parseInt(decorData)].name : DECOR_BORDERS[parseInt(decorData)].name);
+      showToast(`已拖入「${name}」`);
+    }
+    return;
+  }
+  return _origHandleDropOnPage(e, page, pageIndex);
+};
+
+// ==================== 更新 renderElement 支持装饰元素 ====================
+const _origRenderElement = renderElement;
+renderElement = function(pageEl, page, el, pageIndex) {
+  if (el.type === 'decor') {
+    renderDecorElement(pageEl, page, el, pageIndex);
+    return;
+  }
+  return _origRenderElement(pageEl, page, el, pageIndex);
+};
+
+// 渲染装饰元素
+function renderDecorElement(pageEl, page, el, pageIndex) {
+  const elDiv = document.createElement('div');
+  elDiv.className = 'free-element free-decor';
+  elDiv.dataset.elementId = el.id;
+  elDiv.style.left = el.x + 'px';
+  elDiv.style.top = el.y + 'px';
+  elDiv.style.width = el.w + 'px';
+  elDiv.style.height = el.h + 'px';
+  if (el.rotation) {
+    elDiv.style.transform = `rotate(${el.rotation}deg)`;
+  }
+
+  if (el.subtype === 'emoji') {
+    const span = document.createElement('span');
+    span.textContent = el.emoji;
+    span.style.cssText = `font-size:${el.fontSize || 40}px;line-height:1;display:flex;align-items:center;justify-content:center;width:100%;height:100%;pointer-events:none;`;
+    elDiv.appendChild(span);
+  } else if (el.subtype === 'svg' || el.subtype === 'border') {
+    const svgWrap = document.createElement('div');
+    svgWrap.style.cssText = 'width:100%;height:100%;pointer-events:none;display:flex;align-items:center;justify-content:center;';
+    svgWrap.innerHTML = el.svgContent;
+    elDiv.appendChild(svgWrap);
+  }
+
+  // 装饰元素不使用 HTML5 原生拖拽，改为自定义鼠标拖拽（在页面内自由移动）
+  // 选中边框
+  const selectBorder = document.createElement('div');
+  selectBorder.className = 'element-select-border';
+  elDiv.appendChild(selectBorder);
+
+  // 调整大小手柄
+  const handles = ['nw', 'ne', 'sw', 'se'];
+  handles.forEach(h => {
+    const handle = document.createElement('div');
+    handle.className = `resize-handle resize-${h}`;
+    handle.dataset.handle = h;
+    elDiv.appendChild(handle);
+  });
+
+  // 旋转手柄
+  const rotateHandle = document.createElement('div');
+  rotateHandle.className = 'rotate-handle';
+  rotateHandle.title = '旋转';
+  rotateHandle.innerHTML = '↻';
+  rotateHandle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    startRotate(el, elDiv, pageEl, e);
+  });
+  elDiv.appendChild(rotateHandle);
+
+  // 删除按钮
+  const delBtn = document.createElement('button');
+  delBtn.className = 'element-delete-btn';
+  delBtn.textContent = '×';
+  delBtn.title = '删除装饰';
+  delBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    page.elements = page.elements.filter(e => e.id !== el.id);
+    if (state.selectedElement && state.selectedElement.el.id === el.id) {
+      state.selectedElement = null;
+      hideTextPropsBar();
+    }
+    renderAlbumPages();
+  });
+  elDiv.appendChild(delBtn);
+
+  // 点击选中 + 开始拖拽（支持在页面内自由移动位置）
+  elDiv.addEventListener('mousedown', (e) => {
+    if (e.target.classList.contains('resize-handle')) return;
+    if (e.target.classList.contains('rotate-handle')) return;
+    if (e.target.classList.contains('element-delete-btn')) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectElement(el, elDiv, pageEl, e);
+    hideTextPropsBar();
+  });
+
+  pageEl.appendChild(elDiv);
+}
+
+// 初始化装饰面板
+renderDecorPanels();
+
+// 装饰标签页切换事件
+$$('.decor-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    switchDecorTab(tab.dataset.decorTab);
+  });
+});
+
+// ==================== 全局 drop zone（无页面时也能接收装饰素材） ====================
+const albumPagesContainer = $('#album-pages');
+albumPagesContainer.addEventListener('dragover', (e) => {
+  // Chrome 在 dragover 中无法读取自定义 data，用 types 判断
+  if (e.dataTransfer.types.includes('application/decor-type')) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    albumPagesContainer.classList.add('drag-over');
+  }
+});
+albumPagesContainer.addEventListener('dragleave', (e) => {
+  albumPagesContainer.classList.remove('drag-over');
+});
+albumPagesContainer.addEventListener('drop', (e) => {
+  e.preventDefault();
+  albumPagesContainer.classList.remove('drag-over');
+  const decorType = e.dataTransfer.getData('application/decor-type');
+  if (!decorType) return;
+  const decorData = e.dataTransfer.getData('application/decor-data');
+  // 没有页面时自动创建空白页
+  if (state.albumPages.length === 0) {
+    if (state.selectedPhotos.size === 0) {
+      showToast('请先在选片视图中精选照片，或点击"自动排版"');
+      return;
+    }
+    state.albumPages.push({ type: 'free', elements: [] });
+    renderAlbumPages();
+    showToast('已自动创建空白页面');
+  }
+  // 延迟一下等 DOM 更新后，将装饰添加到最后一页
+  setTimeout(() => {
+    const page = state.albumPages[state.albumPages.length - 1];
+    if (!page) return;
+    if (!page.elements) page.elements = [];
+    const elId = newElementId();
+    let el;
+    if (decorType === 'emoji') {
+      el = { type: 'decor', subtype: 'emoji', id: elId, x: 60, y: 60, w: 60, h: 60, emoji: decorData, fontSize: 40 };
+    } else if (decorType === 'svg') {
+      const svgDef = DECOR_SVG[parseInt(decorData)];
+      el = { type: 'decor', subtype: 'svg', id: elId, x: 60, y: 60, w: 80, h: 80, svgContent: svgDef.svg, svgName: svgDef.name };
+    } else if (decorType === 'border') {
+      const borderDef = DECOR_BORDERS[parseInt(decorData)];
+      el = { type: 'decor', subtype: 'border', id: elId, x: 10, y: 10, w: 600, h: Math.round(620 / 0.705) - 20, svgContent: borderDef.svg, svgName: borderDef.name };
+    }
+    if (el) {
+      page.elements.push(el);
+      renderAlbumPages();
+      const name = decorType === 'emoji' ? decorData : (decorType === 'svg' ? DECOR_SVG[parseInt(decorData)].name : DECOR_BORDERS[parseInt(decorData)].name);
+      showToast(`已拖入「${name}」`);
+    }
+  }, 100);
+});
+
+// ==================== 自动保存系统 ====================
+const AUTO_SAVE_KEY = 'photo-album-autosave';
+let _autoSaveTimer = null;
+let _lastManualSaveTime = 0;
+let _hasUnsavedChanges = false;
+
+function autoSave() {
+  if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+  _autoSaveTimer = setTimeout(() => {
+    if (!state.rootDir && state.selectedPhotos.size === 0 && state.albumPages.length === 0) return;
+    try {
+      const data = {
+        rootDir: state.rootDir,
+        selectedPhotos: [...state.selectedPhotos.values()],
+        albumPages: state.albumPages,
+        theme: state.theme,
+        albumTitle: state.albumTitle,
+        albumSubtitle: state.albumSubtitle,
+        coverPhoto: state.coverPhoto,
+        frameStyle: state.frameStyle,
+        showDecorations: state.showDecorations,
+        savedAt: Date.now(),
+        version: '3.5'
+      };
+      localStorage.setItem(AUTO_SAVE_KEY, JSON.stringify(data));
+      _hasUnsavedChanges = true;
+    } catch (e) {
+      // localStorage 可能满，忽略错误
+      console.warn('自动保存失败:', e.message);
+    }
+  }, 300);
+}
+
+function checkAutoSave() {
+  try {
+    const raw = localStorage.getItem(AUTO_SAVE_KEY);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!data.rootDir && data.selectedPhotos.length === 0 && data.albumPages.length === 0) return false;
+    return data;
+  } catch (e) {
+    return false;
+  }
+}
+
+function restoreAutoSave(data) {
+  state.rootDir = data.rootDir;
+  state.selectedPhotos = new Map();
+  if (data.selectedPhotos) {
+    for (const p of data.selectedPhotos) state.selectedPhotos.set(p.path, p);
+  }
+  state.albumPages = data.albumPages || [];
+  state.theme = data.theme || 'warm';
+  state.albumTitle = data.albumTitle || '成长纪念册';
+  state.albumSubtitle = data.albumSubtitle || '记录每一个美好瞬间';
+  state.coverPhoto = data.coverPhoto || null;
+  state.frameStyle = data.frameStyle || 'clean';
+  state.showDecorations = data.showDecorations !== false;
+  setTheme(state.theme);
+  if (state.rootDir) {
+    $('#dir-path').textContent = state.rootDir;
+  }
+  updateSelectedCount();
+  renderSelectedPanel();
+  renderYearNav();
+  switchView('layout');
+  _hasUnsavedChanges = false;
+  showToast('✅ 已恢复上次的编辑内容');
+}
+
+// 页面关闭前提醒
+window.addEventListener('beforeunload', (e) => {
+  if (_hasUnsavedChanges && (state.selectedPhotos.size > 0 || state.albumPages.length > 0)) {
+    e.preventDefault();
+    e.returnValue = '您有未保存的排版内容，确定要离开吗？建议先点击"保存"按钮。';
+    return e.returnValue;
+  }
+});
+
 // ==================== 初始化 ====================
-console.log('📸 自由相册排版软件 v3.2 已就绪');
+console.log('📸 自由相册排版软件 v3.5 已就绪');
 console.log('自由排版功能：');
 console.log('  ✨ 照片和文字可自由拖拽位置');
 console.log('  ✨ 可自由调整元素大小');
@@ -2080,3 +3371,31 @@ console.log('  ✨ 文字完整编辑：字体/字号/颜色/加粗/斜体/对�
 console.log('  ✨ 可自由添加/删除照片和文字');
 console.log('  ✨ 所有自动生成内容可编辑可删除');
 console.log('  ✨ 支持任意题材，不限于儿童照片');
+console.log('  🎨 内置装饰素材库：Emoji / SVG / 花边边框');
+console.log('  🎨 支持拖拽或点击添加装饰到页面');
+console.log('  💾 自动保存到浏览器 — 刷新页面不会丢失数据');
+
+// 启动时检测自动保存
+const autoSaveData = checkAutoSave();
+if (autoSaveData) {
+  const age = Date.now() - (autoSaveData.savedAt || 0);
+  const ageStr = age < 60000 ? '刚刚' : age < 3600000 ? `${Math.round(age / 60000)}分钟前` : `${Math.round(age / 3600000)}小时前`;
+  const pageCount = autoSaveData.albumPages ? autoSaveData.albumPages.length : 0;
+  const photoCount = autoSaveData.selectedPhotos ? autoSaveData.selectedPhotos.length : 0;
+  
+  // 延迟弹出恢复提示，等 DOM 就绪
+  setTimeout(() => {
+    const shouldRestore = confirm(
+      `🔔 检测到自动保存的排版内容：\n\n` +
+      `📷 精选照片：${photoCount} 张\n` +
+      `📄 排版页面：${pageCount} 页\n` +
+      `🕐 保存时间：${ageStr}\n\n` +
+      `是否恢复？\n（点击"取消"将清除自动保存）`
+    );
+    if (shouldRestore) {
+      restoreAutoSave(autoSaveData);
+    } else {
+      localStorage.removeItem(AUTO_SAVE_KEY);
+    }
+  }, 500);
+}

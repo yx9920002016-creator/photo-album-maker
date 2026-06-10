@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
-const PORT = 0; // 0 = 让系统自动分配可用端口
+const PORT = 3456; // 固定端口 3456
 const ROOT = __dirname;
 
 // MIME 类型
@@ -67,7 +67,15 @@ const server = http.createServer((req, res) => {
       res.end('Not Found');
       return;
     }
-    res.writeHead(200, { 'Content-Type': contentType });
+    // 禁止缓存 HTML/CSS/JS 文件，确保每次都是最新版本
+    const headers = { 'Content-Type': contentType };
+    const ext = path.extname(filePath).toLowerCase();
+    if (['.html', '.css', '.js'].includes(ext)) {
+      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      headers['Pragma'] = 'no-cache';
+      headers['Expires'] = '0';
+    }
+    res.writeHead(200, headers);
     res.end(data);
   });
 });
@@ -478,11 +486,12 @@ if ($form.Tag) {
   const content = Buffer.from(psScript, 'utf-8');
   fs.writeFileSync(psFile, Buffer.concat([bom, content]));
 
-  exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 60000 }, (err, stdout) => {
+  exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 60000 }, (err, stdout, stderr) => {
     try { fs.unlinkSync(psFile); } catch {}
     if (err) {
-      res.writeHead(500);
-      res.end(JSON.stringify({ error: err.message }));
+      console.error('PowerShell dialog error:', err.message, stderr);
+      res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ error: err.message, stderr: stderr }));
       return;
     }
     const dirPath = stdout.trim();
