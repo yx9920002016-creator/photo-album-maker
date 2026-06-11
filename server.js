@@ -82,12 +82,15 @@ const server = http.createServer((req, res) => {
 
 // 扫描目录（智能识别目录层级）
 function handleScan(url, res) {
-  const dirPath = url.searchParams.get('path');
+  let dirPath = url.searchParams.get('path');
   if (!dirPath) {
     res.writeHead(400);
     res.end(JSON.stringify({ error: 'Missing path' }));
     return;
   }
+  
+  // 规范化路径
+  dirPath = path.normalize(dirPath);
   
   const result = {};
   
@@ -253,15 +256,19 @@ function handleScan(url, res) {
 
 // 缩略图（需要 sharp，没有则返回原图路径让浏览器缩放）
 function handleThumbnail(url, res) {
-  const filePath = url.searchParams.get('path');
+  let filePath = url.searchParams.get('path');
   if (!filePath) {
     res.writeHead(400);
     res.end('Missing path');
     return;
   }
   
+  // 规范化路径（处理反斜杠、多余斜杠等）
+  filePath = path.normalize(filePath);
+  
   // 检查文件是否存在
   if (!fs.existsSync(filePath)) {
+    console.error('Thumbnail not found:', filePath);
     res.writeHead(404);
     res.end('Not Found');
     return;
@@ -278,11 +285,13 @@ function handleThumbnail(url, res) {
         res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'max-age=3600' });
         res.end(buffer);
       })
-      .catch(() => {
+      .catch((err) => {
+        console.error('Sharp processing error for:', filePath, err.message);
         sendOriginal(res, filePath);
       });
   } catch (e) {
     // sharp 未安装，直接发送原图
+    console.error('Sharp require error:', e.message);
     sendOriginal(res, filePath);
   }
 }
@@ -291,14 +300,31 @@ function sendOriginal(res, filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'image/jpeg';
   const stream = fs.createReadStream(filePath);
+  stream.on('error', (err) => {
+    console.error('Stream error for:', filePath, err.message);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end('Read Error');
+    }
+  });
   res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'max-age=3600' });
   stream.pipe(res);
 }
 
 // 获取原图
 function handleFullImage(url, res) {
-  const filePath = url.searchParams.get('path');
-  if (!filePath || !fs.existsSync(filePath)) {
+  let filePath = url.searchParams.get('path');
+  if (!filePath) {
+    res.writeHead(404);
+    res.end('Not Found');
+    return;
+  }
+  
+  // 规范化路径（处理反斜杠、多余斜杠等）
+  filePath = path.normalize(filePath);
+  
+  if (!fs.existsSync(filePath)) {
+    console.error('Full image not found:', filePath);
     res.writeHead(404);
     res.end('Not Found');
     return;
@@ -307,6 +333,13 @@ function handleFullImage(url, res) {
   const ext = path.extname(filePath).toLowerCase();
   const mime = MIME[ext] || 'image/jpeg';
   const stream = fs.createReadStream(filePath);
+  stream.on('error', (err) => {
+    console.error('Full image stream error for:', filePath, err.message);
+    if (!res.headersSent) {
+      res.writeHead(500);
+      res.end('Read Error');
+    }
+  });
   res.writeHead(200, { 'Content-Type': mime });
   stream.pipe(res);
 }
@@ -486,7 +519,7 @@ if ($form.Tag) {
   const content = Buffer.from(psScript, 'utf-8');
   fs.writeFileSync(psFile, Buffer.concat([bom, content]));
 
-  exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psFile}"`, { encoding: 'utf-8', timeout: 60000 }, (err, stdout, stderr) => {
+  exec(`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; & \\"${psFile}\\""`, { encoding: 'utf8', timeout: 60000 }, (err, stdout, stderr) => {
     try { fs.unlinkSync(psFile); } catch {}
     if (err) {
       console.error('PowerShell dialog error:', err.message, stderr);

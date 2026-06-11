@@ -276,6 +276,71 @@ body {
 
 .year-list { flex: 1; overflow-y: auto; padding: 4px; }
 
+/* 已加载目录列表 */
+.dirs-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.loaded-dir-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  background: #f8f9fa;
+  margin: 2px 4px;
+}
+.loaded-dir-item .dir-info {
+  flex: 1;
+  overflow: hidden;
+}
+.loaded-dir-item .dir-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 500;
+}
+.loaded-dir-item .dir-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-light);
+  font-size: 10px;
+  margin-top: 1px;
+}
+.loaded-dir-item .dir-count {
+  font-size: 11px;
+  color: var(--text-light);
+  white-space: nowrap;
+}
+.loaded-dir-item .dir-remove {
+  width: 18px; height: 18px;
+  border: none; background: #e74c3c;
+  color: white; border-radius: 50%;
+  cursor: pointer; font-size: 12px;
+  line-height: 18px; text-align: center;
+  padding: 0;
+  opacity: 0.7;
+  transition: opacity var(--transition);
+}
+.loaded-dir-item .dir-remove:hover { opacity: 1; }
+.years-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
 .year-item {
   padding: 8px 16px;
   cursor: pointer;

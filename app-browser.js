@@ -49,6 +49,8 @@ const state = {
   isRotating: false,
   // 文字属性
   textPropsVisible: false,
+  // 多目录加载
+  loadedDirs: [],
 };
 
 // ==================== 照片智能评分系统 ====================
@@ -176,18 +178,60 @@ $$('.btn-tab').forEach(btn => {
 // ==================== 照片扫描 ====================
 async function loadDirectory(dir) {
   if (!dir) return;
+  // 规范化路径：去除尾部斜杠/反斜杠，统一使用反斜杠
+  dir = dir.replace(/[\/]+$/, '');
+  if (state.loadedDirs && state.loadedDirs.some(d => d.dir === dir)) {
+    showToast('该目录已加载');
+    return;
+  }
   state.rootDir = dir;
   $('#dir-path').textContent = dir;
   $('#dir-input').value = dir;
   showLoading('正在扫描照片目录...');
   try {
-    state.photoData = await API.scanPhotos(dir);
+    const photoData = await API.scanPhotos(dir);
+    const dirLabel = dir.split('\\').pop() || dir;
+    if (!state.loadedDirs) state.loadedDirs = [];
+    state.loadedDirs.push({ dir, photoData, label: dirLabel });
+    mergePhotoData();
     renderYearNav();
     showToast(`扫描完成！共发现 ${countAllPhotos()} 张照片`);
   } catch (e) {
     showToast('扫描失败：' + e.message);
   }
   hideLoading();
+}
+
+function mergePhotoData() {
+  const merged = {};
+  if (!state.loadedDirs) { state.photoData = {}; return; }
+  for (const ld of state.loadedDirs) {
+    for (const [year, months] of Object.entries(ld.photoData)) {
+      if (!merged[year]) merged[year] = [];
+      for (const m of months) {
+        const existing = merged[year].find(em => em.monthFolder === m.monthFolder);
+        if (existing) {
+          existing.photos.push(...m.photos);
+        } else {
+          merged[year].push({ ...m, photos: [...m.photos] });
+        }
+      }
+    }
+  }
+  state.photoData = merged;
+}
+
+function removeLoadedDir(dir) {
+  if (!state.loadedDirs) return;
+  const idx = state.loadedDirs.findIndex(d => d.dir === dir);
+  if (idx < 0) return;
+  state.loadedDirs.splice(idx, 1);
+  mergePhotoData();
+  renderYearNav();
+  state.currentYear = null;
+  state.currentMonth = null;
+  state.currentPhotos = [];
+  renderPhotoGrid(null, null);
 }
 $('#btn-select-dir').addEventListener('click', async () => {
   showLoading('正在打开目录选择对话框...');
@@ -222,44 +266,82 @@ function countAllPhotos() {
 }
 
 // ==================== 年份导航 ====================
+
 function renderYearNav() {
   const container = $('#year-list');
   container.innerHTML = '';
-  const years = Object.keys(state.photoData).sort();
-  years.forEach(yf => {
-    const months = state.photoData[yf];
-    const totalPhotos = months.reduce((s, m) => s + m.photos.length, 0);
-    const yearDiv = document.createElement('div');
-    yearDiv.className = 'year-item';
-    yearDiv.innerHTML = `${yearFolderLabel(yf)} <span class="count">${totalPhotos}张</span>`;
-    yearDiv.addEventListener('click', () => {
-      const wasActive = yearDiv.classList.contains('active');
-      container.querySelectorAll('.year-item').forEach(y => y.classList.remove('active'));
-      container.querySelectorAll('.month-group').forEach(g => g.remove());
-      if (!wasActive) {
-        yearDiv.classList.add('active');
-        state.currentYear = yf;
-        state.currentMonth = null;
-        renderMonthList(yf, yearDiv);
-        renderPhotoGrid(yf, null);
-      } else {
-        state.currentYear = null;
-        state.currentMonth = null;
-        state.currentPhotos = [];
-        renderPhotoGrid(null, null);
-      }
+  
+  if (state.loadedDirs && state.loadedDirs.length > 0) {
+    const dirsHeader = document.createElement('div');
+    dirsHeader.className = 'dirs-header';
+    dirsHeader.textContent = '已加载目录';
+    container.appendChild(dirsHeader);
+    
+    state.loadedDirs.forEach(ld => {
+      const dirItem = document.createElement('div');
+      dirItem.className = 'loaded-dir-item';
+      const totalInDir = Object.values(ld.photoData).reduce((s, months) => 
+        s + months.reduce((ms, m) => ms + m.photos.length, 0), 0);
+      dirItem.innerHTML = `
+        <div class="dir-info" style="flex:1;overflow:hidden;">
+          <div class="dir-label" title="${ld.dir}">${ld.label}</div>
+          <div class="dir-path" title="${ld.dir}">${ld.dir}</div>
+        </div>
+        <span class="dir-count">${totalInDir}张</span>
+        <button class="dir-remove" title="移除该目录">×</button>
+      `;
+      dirItem.querySelector('.dir-remove').addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeLoadedDir(ld.dir);
+      });
+      container.appendChild(dirItem);
     });
-    container.appendChild(yearDiv);
-  });
+  }
+  
+  const years = Object.keys(state.photoData).sort();
+  if (years.length > 0) {
+    const yearsHeader = document.createElement('div');
+    yearsHeader.className = 'years-header';
+    yearsHeader.textContent = '年份';
+    container.appendChild(yearsHeader);
+    
+    years.forEach(yf => {
+      const months = state.photoData[yf];
+      const totalPhotos = months.reduce((s, m) => s + m.photos.length, 0);
+      const yearDiv = document.createElement('div');
+      yearDiv.className = 'year-item';
+      yearDiv.innerHTML = `${yearFolderLabel(yf)} <span class="count">${totalPhotos}张</span>`;
+      yearDiv.addEventListener('click', () => {
+        const wasActive = yearDiv.classList.contains('active');
+        container.querySelectorAll('.year-item').forEach(y => y.classList.remove('active'));
+        container.querySelectorAll('.month-group').forEach(g => g.remove());
+        if (!wasActive) {
+          yearDiv.classList.add('active');
+          state.currentYear = yf;
+          state.currentMonth = null;
+          renderMonthList(yf, yearDiv);
+          renderPhotoGrid(yf, null);
+        } else {
+          state.currentYear = null;
+          state.currentMonth = null;
+          state.currentPhotos = [];
+          renderPhotoGrid(null, null);
+        }
+      });
+      container.appendChild(yearDiv);
+    });
+  }
 }
+
 function renderMonthList(yearFolder, yearDiv) {
   const months = state.photoData[yearFolder];
   const group = document.createElement('div');
   group.className = 'month-group';
+
+  // "全部" 选项
   const allItem = document.createElement('div');
   allItem.className = 'month-item active';
-  const totalInYear = months.reduce((s, m) => s + m.photos.length, 0);
-  allItem.innerHTML = `📂 全部 <span class="count">${totalInYear}张</span>`;
+  allItem.innerHTML = `📂 全部 <span class="count">${months.reduce((s,m)=>s+m.photos.length,0)}张</span>`;
   allItem.addEventListener('click', (e) => {
     e.stopPropagation();
     group.querySelectorAll('.month-item').forEach(m => m.classList.remove('active'));
@@ -268,6 +350,7 @@ function renderMonthList(yearFolder, yearDiv) {
     renderPhotoGrid(yearFolder, null);
   });
   group.appendChild(allItem);
+
   months.forEach(m => {
     const item = document.createElement('div');
     item.className = 'month-item';
@@ -281,10 +364,10 @@ function renderMonthList(yearFolder, yearDiv) {
     });
     group.appendChild(item);
   });
+
   yearDiv.after(group);
 }
 
-// ==================== 照片网格 ====================
 function renderPhotoGrid(yearFolder, monthFolder) {
   const grid = $('#photo-grid');
   grid.innerHTML = '';
@@ -340,6 +423,14 @@ function renderPhotoGrid(yearFolder, monthFolder) {
       img.dataset.src = API.thumbnailUrl(photo.path);
       img.alt = photo.name;
       img.loading = 'lazy';
+      img.onerror = () => {
+        console.error('Image load failed:', photo.path, 'URL:', img.src || img.dataset.src);
+        img.style.display = 'none';
+        const errLabel = document.createElement('div');
+        errLabel.textContent = '加载失败';
+        errLabel.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100%;color:#e74c3c;font-size:12px;';
+        card.appendChild(errLabel);
+      };
       card.appendChild(img);
       // 智能评分徽章
       const score = scorePhoto(photo);
